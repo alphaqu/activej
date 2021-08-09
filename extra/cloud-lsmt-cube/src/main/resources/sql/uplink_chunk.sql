@@ -1,0 +1,14 @@
+CREATE TABLE IF NOT EXISTS `{chunk}`
+(
+    `id`               BIGINT       NOT NULL,
+    `aggregation`      VARCHAR(255) NOT NULL,
+    `measures`         TEXT         NOT NULL,
+    `min_key`          TEXT         NOT NULL,
+    `max_key`          TEXT         NOT NULL,
+    `item_count`       INT          NOT NULL,
+    `added_revision`   BIGINT       NOT NULL,
+    `removed_revision` BIGINT       NULL,
+    `last_modified_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`)
+) ENGINE = InnoDB
+   DEFAULT CHARSET = utf8;
