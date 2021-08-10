@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.activej.aggregation.util;
+package io.activej.cube.http;
 
 import com.dslplatform.json.JsonReader;
 import com.dslplatform.json.JsonReader.ReadObject;
@@ -24,7 +24,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
 
-public interface JsonCodec<T> extends ReadObject<T>, WriteObject<T> {
+interface JsonCodec<T> extends ReadObject<T>, WriteObject<T> {
 	static <T> JsonCodec<T> of(ReadObject<T> readObject, WriteObject<T> writeObject) {
 		return new JsonCodec<T>() {
 			@Override

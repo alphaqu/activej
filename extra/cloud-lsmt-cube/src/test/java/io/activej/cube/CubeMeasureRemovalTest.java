@@ -1,14 +1,11 @@
 package io.activej.cube;
 
-import com.dslplatform.json.ParsingException;
 import io.activej.aggregation.*;
 import io.activej.codegen.DefiningClassLoader;
 import io.activej.common.exception.MalformedDataException;
 import io.activej.csp.process.frames.FrameFormat;
 import io.activej.csp.process.frames.LZ4FrameFormat;
-import io.activej.cube.ot.CubeDiff;
-import io.activej.cube.ot.CubeDiffCodec;
-import io.activej.cube.ot.CubeOT;
+import io.activej.cube.ot.*;
 import io.activej.datastream.StreamConsumer;
 import io.activej.datastream.StreamConsumerToList;
 import io.activej.datastream.StreamSupplier;
@@ -17,11 +14,8 @@ import io.activej.eventloop.Eventloop;
 import io.activej.fs.LocalActiveFs;
 import io.activej.multilog.Multilog;
 import io.activej.multilog.MultilogImpl;
-import io.activej.ot.OTCommit;
 import io.activej.ot.OTStateManager;
-import io.activej.ot.repository.OTRepositoryMySql;
 import io.activej.ot.system.OTSystem;
-import io.activej.ot.uplink.OTUplinkImpl;
 import io.activej.serializer.BinarySerializer;
 import io.activej.serializer.SerializerBuilder;
 import io.activej.test.rules.ByteBufRule;
@@ -48,7 +42,7 @@ import static io.activej.aggregation.AggregationPredicates.alwaysTrue;
 import static io.activej.aggregation.fieldtype.FieldTypes.*;
 import static io.activej.aggregation.measure.Measures.sum;
 import static io.activej.cube.Cube.AggregationConfig.id;
-import static io.activej.cube.TestUtils.initializeRepository;
+import static io.activej.cube.TestUtils.initializeUplink;
 import static io.activej.cube.TestUtils.runProcessLogs;
 import static io.activej.multilog.LogNamingScheme.NAME_PARTITION_REMAINDER_SEQ;
 import static io.activej.promise.TestUtils.await;
@@ -134,10 +128,8 @@ public class CubeMeasureRemovalTest {
 				.withRelation("banner", "campaign");
 
 		DataSource dataSource = dataSource("test.properties");
-		OTSystem<LogDiff<CubeDiff>> otSystem = LogOT.createLogOT(CubeOT.createCubeOT());
-		OTRepositoryMySql<LogDiff<CubeDiff>> repository = OTRepositoryMySql.create(eventloop, executor, dataSource, new IdGeneratorStub(),
-				otSystem, LogDiffCodec.create(CubeDiffCodec.create(cube)));
-		initializeRepository(repository);
+		CubeUplinkMySql uplink = CubeUplinkMySql.create(executor, dataSource, PrimaryKeyCodecs.ofCube(cube));
+		initializeUplink(uplink);
 
 		LocalActiveFs localFs = LocalActiveFs.create(eventloop, executor, logsDir);
 		await(localFs.start());
@@ -148,8 +140,8 @@ public class CubeMeasureRemovalTest {
 				NAME_PARTITION_REMAINDER_SEQ);
 
 		LogOTState<CubeDiff> cubeDiffLogOTState = LogOTState.create(cube);
-		OTUplinkImpl<Long, LogDiff<CubeDiff>, OTCommit<Long, LogDiff<CubeDiff>>> node = OTUplinkImpl.create(repository, otSystem);
-		OTStateManager<Long, LogDiff<CubeDiff>> logCubeStateManager = OTStateManager.create(eventloop, otSystem, node, cubeDiffLogOTState);
+		OTSystem<LogDiff<CubeDiff>> otSystem = LogOT.createLogOT(CubeOT.createCubeOT());
+		OTStateManager<Long, LogDiff<CubeDiff>> logCubeStateManager = OTStateManager.create(eventloop, otSystem, uplink, cubeDiffLogOTState);
 
 		LogOTProcessor<LogItem, CubeDiff> logOTProcessor = LogOTProcessor.create(eventloop, multilog,
 				cube.logStreamConsumer(LogItem.class), "testlog", asList("partitionA"), cubeDiffLogOTState);
@@ -192,7 +184,7 @@ public class CubeMeasureRemovalTest {
 				.withRelation("banner", "campaign");
 
 		LogOTState<CubeDiff> cubeDiffLogOTState1 = LogOTState.create(cube);
-		logCubeStateManager = OTStateManager.create(eventloop, otSystem, node, cubeDiffLogOTState1);
+		logCubeStateManager = OTStateManager.create(eventloop, otSystem, uplink, cubeDiffLogOTState1);
 
 		logOTProcessor = LogOTProcessor.create(eventloop, multilog, cube.logStreamConsumer(LogItem.class),
 				"testlog", asList("partitionA"), cubeDiffLogOTState1);
@@ -276,15 +268,12 @@ public class CubeMeasureRemovalTest {
 							.withDimensions("date")
 							.withMeasures("impressions", "clicks", "conversions"));
 
-			LogDiffCodec<CubeDiff> diffCodec1 = LogDiffCodec.create(CubeDiffCodec.create(cube1));
-			OTSystem<LogDiff<CubeDiff>> otSystem = LogOT.createLogOT(CubeOT.createCubeOT());
-			OTRepositoryMySql<LogDiff<CubeDiff>> repository = OTRepositoryMySql.create(eventloop, executor, dataSource, new IdGeneratorStub(),
-					otSystem, diffCodec1);
-			initializeRepository(repository);
+			CubeUplinkMySql uplink = CubeUplinkMySql.create(executor, dataSource, PrimaryKeyCodecs.ofCube(cube1));
+			initializeUplink(uplink);
 
 			LogOTState<CubeDiff> cubeDiffLogOTState = LogOTState.create(cube1);
-			OTUplinkImpl<Long, LogDiff<CubeDiff>, OTCommit<Long, LogDiff<CubeDiff>>> node = OTUplinkImpl.create(repository, otSystem);
-			OTStateManager<Long, LogDiff<CubeDiff>> logCubeStateManager1 = OTStateManager.create(eventloop, otSystem, node, cubeDiffLogOTState);
+			OTSystem<LogDiff<CubeDiff>> otSystem = LogOT.createLogOT(CubeOT.createCubeOT());
+			OTStateManager<Long, LogDiff<CubeDiff>> logCubeStateManager1 = OTStateManager.create(eventloop, otSystem, uplink, cubeDiffLogOTState);
 
 			LogDataConsumer<LogItem, CubeDiff> logStreamConsumer1 = cube1.logStreamConsumer(LogItem.class);
 			LogOTProcessor<LogItem, CubeDiff> logOTProcessor1 = LogOTProcessor.create(eventloop,
@@ -306,17 +295,13 @@ public class CubeMeasureRemovalTest {
 						.withDimensions("date")
 						.withMeasures("impressions"));
 
-		LogDiffCodec<CubeDiff> diffCodec2 = LogDiffCodec.create(CubeDiffCodec.create(cube2));
-		OTSystem<LogDiff<CubeDiff>> otSystem = LogOT.createLogOT(CubeOT.createCubeOT());
-		OTRepositoryMySql<LogDiff<CubeDiff>> otSourceSql2 = OTRepositoryMySql.create(eventloop, executor, dataSource, new IdGeneratorStub(),
-				otSystem, diffCodec2);
-		otSourceSql2.initialize();
+		CubeUplinkMySql uplink2 = CubeUplinkMySql.create(executor, dataSource, PrimaryKeyCodecs.ofCube(cube2))
+				.withMeasuresValidator(MeasuresValidator.ofCube(cube2));
+		uplink2.initialize();
 
-		Throwable exception = awaitException(otSourceSql2.getHeads());
+		Throwable exception = awaitException(uplink2.checkout());
 		assertThat(exception, instanceOf(MalformedDataException.class));
-		Throwable cause = exception.getCause();
-		assertThat(cause, instanceOf(ParsingException.class));
-		assertEquals("Unknown fields: [clicks, conversions]", cause.getMessage());
+		assertEquals("Unknown measures [clicks, conversions] in aggregation 'date'", exception.getMessage());
 	}
 
 	@Test
@@ -336,15 +321,12 @@ public class CubeMeasureRemovalTest {
 							.withDimensions("date")
 							.withMeasures("clicks"));
 
-			LogDiffCodec<CubeDiff> diffCodec1 = LogDiffCodec.create(CubeDiffCodec.create(cube1));
-			OTSystem<LogDiff<CubeDiff>> otSystem = LogOT.createLogOT(CubeOT.createCubeOT());
-			OTRepositoryMySql<LogDiff<CubeDiff>> repository = OTRepositoryMySql.create(eventloop, executor, dataSource, new IdGeneratorStub(),
-					otSystem, diffCodec1);
-			initializeRepository(repository);
+			CubeUplinkMySql uplink = CubeUplinkMySql.create(executor, dataSource, PrimaryKeyCodecs.ofCube(cube1));
+			initializeUplink(uplink);
 
 			LogOTState<CubeDiff> cubeDiffLogOTState = LogOTState.create(cube1);
-			OTUplinkImpl<Long, LogDiff<CubeDiff>, OTCommit<Long, LogDiff<CubeDiff>>> node = OTUplinkImpl.create(repository, otSystem);
-			OTStateManager<Long, LogDiff<CubeDiff>> logCubeStateManager1 = OTStateManager.create(eventloop, otSystem, node, cubeDiffLogOTState);
+			OTSystem<LogDiff<CubeDiff>> otSystem = LogOT.createLogOT(CubeOT.createCubeOT());
+			OTStateManager<Long, LogDiff<CubeDiff>> logCubeStateManager1 = OTStateManager.create(eventloop, otSystem, uplink, cubeDiffLogOTState);
 
 			LogDataConsumer<LogItem, CubeDiff> logStreamConsumer1 = cube1.logStreamConsumer(LogItem.class);
 
@@ -368,16 +350,11 @@ public class CubeMeasureRemovalTest {
 						.withDimensions("date")
 						.withMeasures("impressions", "clicks"));
 
-		LogDiffCodec<CubeDiff> diffCodec2 = LogDiffCodec.create(CubeDiffCodec.create(cube2));
-		OTSystem<LogDiff<CubeDiff>> otSystem = LogOT.createLogOT(CubeOT.createCubeOT());
-		OTRepositoryMySql<LogDiff<CubeDiff>> otSourceSql2 = OTRepositoryMySql.create(eventloop, executor, dataSource, new IdGeneratorStub(),
-				otSystem, diffCodec2);
-		otSourceSql2.initialize();
+		CubeUplinkMySql uplink2 = CubeUplinkMySql.create(executor, dataSource, PrimaryKeyCodecs.ofCube(cube2));
+		uplink2.initialize();
 
-		Throwable exception = awaitException(otSourceSql2.getHeads());
+		Throwable exception = awaitException(uplink2.checkout());
 		assertThat(exception, instanceOf(MalformedDataException.class));
-		Throwable cause = exception.getCause();
-		assertThat(cause, instanceOf(ParsingException.class));
-		assertEquals("Unknown aggregation: impressionsAggregation", cause.getMessage());
+		assertEquals("Unknown aggregation 'otherAggregation'", exception.getMessage());
 	}
 }

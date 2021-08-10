@@ -24,6 +24,7 @@ import java.util.concurrent.ThreadLocalRandom;
 
 import static io.activej.common.Utils.mapOf;
 import static io.activej.common.Utils.setOf;
+import static io.activej.cube.TestUtils.initializeUplink;
 import static io.activej.promise.TestUtils.await;
 import static io.activej.promise.TestUtils.awaitException;
 import static io.activej.test.TestUtils.dataSource;
@@ -62,8 +63,7 @@ public class CubeUplinkMySqlTest {
 		PrimaryKeyCodecs codecs = PrimaryKeyCodecs.ofLookUp($ -> codec);
 		uplink = CubeUplinkMySql.create(Executors.newCachedThreadPool(), dataSource, codecs);
 
-		uplink.initialize();
-		uplink.truncateTables();
+		initializeUplink(uplink);
 	}
 
 	@Test

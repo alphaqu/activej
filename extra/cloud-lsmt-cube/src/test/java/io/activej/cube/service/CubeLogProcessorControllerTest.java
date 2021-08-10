@@ -16,21 +16,22 @@ import io.activej.cube.IdGeneratorStub;
 import io.activej.cube.LogItem;
 import io.activej.cube.exception.CubeException;
 import io.activej.cube.ot.CubeDiff;
-import io.activej.cube.ot.CubeDiffCodec;
 import io.activej.cube.ot.CubeOT;
+import io.activej.cube.ot.CubeUplinkMySql;
+import io.activej.cube.ot.PrimaryKeyCodecs;
 import io.activej.datastream.StreamConsumer;
 import io.activej.datastream.StreamSupplier;
-import io.activej.etl.*;
+import io.activej.etl.LogDiff;
+import io.activej.etl.LogOT;
+import io.activej.etl.LogOTProcessor;
+import io.activej.etl.LogOTState;
 import io.activej.eventloop.Eventloop;
 import io.activej.fs.FileMetadata;
 import io.activej.fs.LocalActiveFs;
 import io.activej.multilog.Multilog;
 import io.activej.multilog.MultilogImpl;
-import io.activej.ot.OTCommit;
 import io.activej.ot.OTStateManager;
-import io.activej.ot.repository.OTRepositoryMySql;
 import io.activej.ot.system.OTSystem;
-import io.activej.ot.uplink.OTUplinkImpl;
 import io.activej.serializer.BinarySerializer;
 import io.activej.serializer.SerializerBuilder;
 import io.activej.test.rules.ByteBufRule;
@@ -52,7 +53,7 @@ import static io.activej.aggregation.fieldtype.FieldTypes.*;
 import static io.activej.aggregation.measure.Measures.sum;
 import static io.activej.common.Utils.first;
 import static io.activej.cube.Cube.AggregationConfig.id;
-import static io.activej.cube.TestUtils.initializeRepository;
+import static io.activej.cube.TestUtils.initializeUplink;
 import static io.activej.multilog.LogNamingScheme.NAME_PARTITION_REMAINDER_SEQ;
 import static io.activej.promise.TestUtils.await;
 import static io.activej.promise.TestUtils.awaitException;
@@ -116,11 +117,9 @@ public final class CubeLogProcessorControllerTest {
 						.withDimensions("advertiser")
 						.withMeasures("impressions", "clicks", "conversions", "revenue"));
 
-		OTRepositoryMySql<LogDiff<CubeDiff>> repository = OTRepositoryMySql.create(eventloop, executor, dataSource, new IdGeneratorStub(),
-				OT_SYSTEM, LogDiffCodec.create(CubeDiffCodec.create(cube)));
-		initializeRepository(repository);
+		CubeUplinkMySql uplink = CubeUplinkMySql.create(executor, dataSource, PrimaryKeyCodecs.ofCube(cube));
+		initializeUplink(uplink);
 
-		OTUplinkImpl<Long, LogDiff<CubeDiff>, OTCommit<Long, LogDiff<CubeDiff>>> uplink = OTUplinkImpl.create(repository, OT_SYSTEM);
 		LogOTState<CubeDiff> logState = LogOTState.create(cube);
 		OTStateManager<Long, LogDiff<CubeDiff>> stateManager = OTStateManager.create(eventloop, OT_SYSTEM, uplink, logState);
 

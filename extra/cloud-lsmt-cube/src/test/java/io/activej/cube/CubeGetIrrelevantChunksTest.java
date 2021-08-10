@@ -6,19 +6,16 @@ import io.activej.codegen.DefiningClassLoader;
 import io.activej.csp.process.frames.FrameFormat;
 import io.activej.csp.process.frames.LZ4FrameFormat;
 import io.activej.cube.ot.CubeDiff;
-import io.activej.cube.ot.CubeDiffCodec;
 import io.activej.cube.ot.CubeOT;
+import io.activej.cube.ot.CubeUplinkMySql;
+import io.activej.cube.ot.PrimaryKeyCodecs;
 import io.activej.etl.LogDiff;
-import io.activej.etl.LogDiffCodec;
 import io.activej.etl.LogOT;
 import io.activej.etl.LogOTState;
 import io.activej.eventloop.Eventloop;
 import io.activej.fs.LocalActiveFs;
-import io.activej.ot.OTCommit;
 import io.activej.ot.OTStateManager;
-import io.activej.ot.repository.OTRepositoryMySql;
 import io.activej.ot.system.OTSystem;
-import io.activej.ot.uplink.OTUplinkImpl;
 import io.activej.test.rules.ByteBufRule;
 import io.activej.test.rules.EventloopRule;
 import org.junit.Before;
@@ -45,7 +42,7 @@ import static io.activej.aggregation.fieldtype.FieldTypes.*;
 import static io.activej.aggregation.measure.Measures.sum;
 import static io.activej.common.Utils.mapOf;
 import static io.activej.cube.Cube.AggregationConfig.id;
-import static io.activej.cube.TestUtils.initializeRepository;
+import static io.activej.cube.TestUtils.initializeUplink;
 import static io.activej.promise.TestUtils.await;
 import static io.activej.test.TestUtils.dataSource;
 import static java.util.stream.Collectors.toSet;
@@ -82,7 +79,7 @@ public final class CubeGetIrrelevantChunksTest {
 	private Executor executor;
 	private Cube.AggregationConfig dateAggregation;
 	private Cube.AggregationConfig advertiserDateAggregation;
-	private OTUplinkImpl<Long, LogDiff<CubeDiff>, OTCommit<Long, LogDiff<CubeDiff>>> node;
+	private CubeUplinkMySql uplink;
 	private Cube basicCube;
 	private Cube cube;
 
@@ -121,13 +118,10 @@ public final class CubeGetIrrelevantChunksTest {
 				.withAggregation(advertiserDateAggregation);
 
 		DataSource dataSource = dataSource("test.properties");
-		OTRepositoryMySql<LogDiff<CubeDiff>> repository = OTRepositoryMySql.create(eventloop, executor, dataSource, new IdGeneratorStub(),
-				OT_SYSTEM, LogDiffCodec.create(CubeDiffCodec.create(basicCube)));
-		initializeRepository(repository);
-
 		LogOTState<CubeDiff> cubeDiffLogOTState = LogOTState.create(basicCube);
-		node = OTUplinkImpl.create(repository, OT_SYSTEM);
-		stateManager = OTStateManager.create(eventloop, OT_SYSTEM, node, cubeDiffLogOTState);
+		uplink = CubeUplinkMySql.create(executor, dataSource, PrimaryKeyCodecs.ofCube(basicCube));
+		initializeUplink(uplink);
+		stateManager = OTStateManager.create(eventloop, OT_SYSTEM, uplink, cubeDiffLogOTState);
 		await(stateManager.checkout());
 	}
 
@@ -201,7 +195,7 @@ public final class CubeGetIrrelevantChunksTest {
 
 		assertEquals(expectedChunks, basicCube.getAllChunks());
 
-		stateManager = OTStateManager.create(eventloop, OT_SYSTEM, node, LogOTState.create(cube));
+		stateManager = OTStateManager.create(eventloop, OT_SYSTEM, uplink, LogOTState.create(cube));
 		await(stateManager.checkout());
 
 		Set<Object> irrelevantChunks = cube.getIrrelevantChunks()

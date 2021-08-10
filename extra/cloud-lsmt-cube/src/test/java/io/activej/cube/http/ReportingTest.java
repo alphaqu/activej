@@ -10,8 +10,9 @@ import io.activej.csp.process.frames.LZ4FrameFormat;
 import io.activej.cube.*;
 import io.activej.cube.attributes.AbstractAttributeResolver;
 import io.activej.cube.ot.CubeDiff;
-import io.activej.cube.ot.CubeDiffCodec;
 import io.activej.cube.ot.CubeOT;
+import io.activej.cube.ot.CubeUplinkMySql;
+import io.activej.cube.ot.PrimaryKeyCodecs;
 import io.activej.datastream.StreamConsumer;
 import io.activej.datastream.StreamDataAcceptor;
 import io.activej.datastream.StreamSupplier;
@@ -22,11 +23,8 @@ import io.activej.http.AsyncHttpClient;
 import io.activej.http.AsyncHttpServer;
 import io.activej.multilog.Multilog;
 import io.activej.multilog.MultilogImpl;
-import io.activej.ot.OTCommit;
 import io.activej.ot.OTStateManager;
-import io.activej.ot.repository.OTRepositoryMySql;
 import io.activej.ot.system.OTSystem;
-import io.activej.ot.uplink.OTUplinkImpl;
 import io.activej.record.Record;
 import io.activej.serializer.SerializerBuilder;
 import io.activej.serializer.annotations.Serialize;
@@ -59,7 +57,7 @@ import static io.activej.cube.Cube.AggregationConfig.id;
 import static io.activej.cube.CubeQuery.Ordering.asc;
 import static io.activej.cube.ReportType.DATA;
 import static io.activej.cube.ReportType.DATA_WITH_TOTALS;
-import static io.activej.cube.TestUtils.initializeRepository;
+import static io.activej.cube.TestUtils.initializeUplink;
 import static io.activej.cube.http.ReportingTest.LogItem.*;
 import static io.activej.multilog.LogNamingScheme.NAME_PARTITION_REMAINDER_SEQ;
 import static io.activej.promise.TestUtils.await;
@@ -309,14 +307,12 @@ public final class ReportingTest {
 						.withMeasures(MEASURES.keySet()));
 
 		DataSource dataSource = dataSource("test.properties");
-		OTSystem<LogDiff<CubeDiff>> otSystem = LogOT.createLogOT(CubeOT.createCubeOT());
-		OTRepositoryMySql<LogDiff<CubeDiff>> repository = OTRepositoryMySql.create(eventloop, executor, dataSource, new IdGeneratorStub(),
-				otSystem, LogDiffCodec.create(CubeDiffCodec.create(cube)));
-		initializeRepository(repository);
+		CubeUplinkMySql uplink = CubeUplinkMySql.create(executor, dataSource, PrimaryKeyCodecs.ofCube(cube));
+		initializeUplink(uplink);
 
 		LogOTState<CubeDiff> cubeDiffLogOTState = LogOTState.create(cube);
-		OTUplinkImpl<Long, LogDiff<CubeDiff>, OTCommit<Long, LogDiff<CubeDiff>>> node = OTUplinkImpl.create(repository, otSystem);
-		OTStateManager<Long, LogDiff<CubeDiff>> logCubeStateManager = OTStateManager.create(eventloop, otSystem, node, cubeDiffLogOTState);
+		OTSystem<LogDiff<CubeDiff>> otSystem = LogOT.createLogOT(CubeOT.createCubeOT());
+		OTStateManager<Long, LogDiff<CubeDiff>> logCubeStateManager = OTStateManager.create(eventloop, otSystem, uplink, cubeDiffLogOTState);
 
 		LocalActiveFs activeFs = LocalActiveFs.create(eventloop, executor, temporaryFolder.newFolder().toPath());
 		await(activeFs.start());

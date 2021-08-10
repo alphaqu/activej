@@ -7,23 +7,20 @@ import io.activej.codegen.DefiningClassLoader;
 import io.activej.csp.process.frames.FrameFormat;
 import io.activej.csp.process.frames.LZ4FrameFormat;
 import io.activej.cube.Cube.AggregationConfig;
-import io.activej.cube.ot.CubeDiff;
-import io.activej.cube.ot.CubeDiffCodec;
-import io.activej.cube.ot.CubeDiffScheme;
-import io.activej.cube.ot.CubeOT;
+import io.activej.cube.ot.*;
 import io.activej.cube.service.CubeConsolidationController;
 import io.activej.datastream.StreamConsumer;
 import io.activej.datastream.StreamSupplier;
-import io.activej.etl.*;
+import io.activej.etl.LogDiff;
+import io.activej.etl.LogOT;
+import io.activej.etl.LogOTProcessor;
+import io.activej.etl.LogOTState;
 import io.activej.eventloop.Eventloop;
 import io.activej.fs.LocalActiveFs;
 import io.activej.multilog.Multilog;
 import io.activej.multilog.MultilogImpl;
-import io.activej.ot.OTCommit;
 import io.activej.ot.OTStateManager;
-import io.activej.ot.repository.OTRepositoryMySql;
 import io.activej.ot.system.OTSystem;
-import io.activej.ot.uplink.OTUplinkImpl;
 import io.activej.serializer.SerializerBuilder;
 import io.activej.test.rules.ByteBufRule;
 import io.activej.test.rules.ClassBuilderConstantsRule;
@@ -39,7 +36,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.Month;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
@@ -50,7 +50,7 @@ import static io.activej.aggregation.fieldtype.FieldTypes.*;
 import static io.activej.aggregation.measure.Measures.sum;
 import static io.activej.common.Utils.keysToMap;
 import static io.activej.cube.Cube.AggregationConfig.id;
-import static io.activej.cube.TestUtils.initializeRepository;
+import static io.activej.cube.TestUtils.initializeUplink;
 import static io.activej.cube.TestUtils.runProcessLogs;
 import static io.activej.multilog.LogNamingScheme.NAME_PARTITION_REMAINDER_SEQ;
 import static io.activej.promise.TestUtils.await;
@@ -92,7 +92,7 @@ public class CubeRemovingOfIrrelevantChunksTest {
 	private AggregationConfig dateAggregation;
 	private AggregationConfig advertiserDateAggregation;
 	private AggregationConfig campaignBannerDateAggregation;
-	private OTUplinkImpl<Long, LogDiff<CubeDiff>, OTCommit<Long, LogDiff<CubeDiff>>> node;
+	private CubeUplinkMySql uplink;
 
 	@Before
 	public void before() throws Exception {
@@ -126,13 +126,11 @@ public class CubeRemovingOfIrrelevantChunksTest {
 				.withAggregation(campaignBannerDateAggregation);
 
 		DataSource dataSource = dataSource("test.properties");
-		OTRepositoryMySql<LogDiff<CubeDiff>> repository = OTRepositoryMySql.create(eventloop, executor, dataSource, new IdGeneratorStub(),
-				OT_SYSTEM, LogDiffCodec.create(CubeDiffCodec.create(basicCube)));
-		initializeRepository(repository);
-
 		LogOTState<CubeDiff> cubeDiffLogOTState = LogOTState.create(basicCube);
-		node = OTUplinkImpl.create(repository, OT_SYSTEM);
-		OTStateManager<Long, LogDiff<CubeDiff>> stateManager = OTStateManager.create(eventloop, OT_SYSTEM, node, cubeDiffLogOTState);
+		uplink = CubeUplinkMySql.create(executor, dataSource, PrimaryKeyCodecs.ofCube(basicCube));
+		initializeUplink(uplink);
+
+		OTStateManager<Long, LogDiff<CubeDiff>> stateManager = OTStateManager.create(eventloop, OT_SYSTEM, uplink, cubeDiffLogOTState);
 
 		LocalActiveFs localFs = LocalActiveFs.create(eventloop, executor, logsDir);
 		await(localFs.start());
@@ -186,7 +184,7 @@ public class CubeRemovingOfIrrelevantChunksTest {
 				.withAggregation(dateAggregation.withPredicate(DATE_PREDICATE))
 				.withAggregation(advertiserDateAggregation.withPredicate(DATE_PREDICATE))
 				.withAggregation(campaignBannerDateAggregation.withPredicate(DATE_PREDICATE));
-		OTStateManager<Long, LogDiff<CubeDiff>> stateManager = OTStateManager.create(eventloop, OT_SYSTEM, node, LogOTState.create(cube));
+		OTStateManager<Long, LogDiff<CubeDiff>> stateManager = OTStateManager.create(eventloop, OT_SYSTEM, uplink, LogOTState.create(cube));
 		await(stateManager.checkout());
 
 		CubeConsolidationController<Long, LogDiff<CubeDiff>, Long> consolidationController =

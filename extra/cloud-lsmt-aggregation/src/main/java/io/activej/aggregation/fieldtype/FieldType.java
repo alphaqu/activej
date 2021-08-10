@@ -16,7 +16,7 @@
 
 package io.activej.aggregation.fieldtype;
 
-import io.activej.aggregation.util.JsonCodec;
+import io.activej.aggregation.util.StringCodec;
 import io.activej.codegen.expression.Expression;
 import io.activej.codegen.expression.Expressions;
 import io.activej.serializer.SerializerDef;
@@ -32,14 +32,14 @@ public class FieldType<T> {
 	private final Type dataType;
 	private final SerializerDef serializer;
 	@Nullable
-	private final JsonCodec<?> internalCodec;
-	private final JsonCodec<T> codec;
+	private final StringCodec<?> internalCodec;
+	private final StringCodec<T> codec;
 
-	protected FieldType(Class<T> dataType, SerializerDef serializer, JsonCodec<T> codec) {
+	protected FieldType(Class<T> dataType, SerializerDef serializer, StringCodec<T> codec) {
 		this(dataType, dataType, serializer, codec, codec);
 	}
 
-	protected FieldType(Class<?> internalDataType, Type dataType, SerializerDef serializer, JsonCodec<T> codec, @Nullable JsonCodec<?> internalCodec) {
+	protected FieldType(Class<?> internalDataType, Type dataType, SerializerDef serializer, StringCodec<T> codec, @Nullable StringCodec<?> internalCodec) {
 		this.internalDataType = internalDataType;
 		this.dataType = dataType;
 		this.serializer = serializer;
@@ -64,11 +64,11 @@ public class FieldType<T> {
 	}
 
 	@Nullable
-	public JsonCodec<?> getInternalCodec() {
+	public StringCodec<?> getInternalCodec() {
 		return internalCodec;
 	}
 
-	public JsonCodec<T> getCodec() {
+	public StringCodec<T> getCodec() {
 		return codec;
 	}
 
