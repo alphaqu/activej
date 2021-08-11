@@ -21,13 +21,11 @@ import io.activej.async.function.AsyncSupplier;
 import io.activej.common.Utils;
 import io.activej.cube.exception.CubeException;
 import io.activej.cube.ot.CubeDiffScheme;
+import io.activej.cube.ot.CubeUplink;
 import io.activej.eventloop.Eventloop;
 import io.activej.eventloop.jmx.EventloopJmxBeanEx;
 import io.activej.jmx.api.attribute.JmxAttribute;
 import io.activej.jmx.api.attribute.JmxOperation;
-import io.activej.ot.OTCommit;
-import io.activej.ot.repository.OTRepositoryEx;
-import io.activej.ot.system.OTSystem;
 import io.activej.promise.Promise;
 import io.activej.promise.Promises;
 import io.activej.promise.jmx.PromiseStats;
@@ -36,7 +34,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
-import java.util.List;
 import java.util.Set;
 
 import static io.activej.aggregation.util.Utils.wrapException;
@@ -44,9 +41,7 @@ import static io.activej.async.function.AsyncSuppliers.reuse;
 import static io.activej.async.util.LogUtils.Level.TRACE;
 import static io.activej.async.util.LogUtils.thisMethod;
 import static io.activej.async.util.LogUtils.toLogger;
-import static io.activej.common.Utils.first;
 import static io.activej.cube.Utils.chunksInDiffs;
-import static io.activej.ot.OTAlgorithms.checkout;
 
 public final class CubeBackupController<K, D, C> implements EventloopJmxBeanEx {
 	private static final Logger logger = LoggerFactory.getLogger(CubeBackupController.class);
@@ -54,8 +49,7 @@ public final class CubeBackupController<K, D, C> implements EventloopJmxBeanEx {
 	public static final Duration DEFAULT_SMOOTHING_WINDOW = Duration.ofMinutes(5);
 
 	private final Eventloop eventloop;
-	private final OTSystem<D> otSystem;
-	private final OTRepositoryEx<K, D> repository;
+	private final CubeUplink<K, D, ?> uplink;
 	private final ActiveFsChunkStorage<C> storage;
 
 	private final CubeDiffScheme<D> cubeDiffScheme;
@@ -65,52 +59,36 @@ public final class CubeBackupController<K, D, C> implements EventloopJmxBeanEx {
 	private final PromiseStats promiseBackupChunks = PromiseStats.create(DEFAULT_SMOOTHING_WINDOW);
 
 	CubeBackupController(Eventloop eventloop,
-			CubeDiffScheme<D> cubeDiffScheme,
-			OTRepositoryEx<K, D> repository,
-			OTSystem<D> otSystem,
-			ActiveFsChunkStorage<C> storage) {
+			CubeUplink<K, D, ?> uplink,
+			ActiveFsChunkStorage<C> storage, CubeDiffScheme<D> cubeDiffScheme) {
 		this.eventloop = eventloop;
-		this.cubeDiffScheme = cubeDiffScheme;
-		this.otSystem = otSystem;
-		this.repository = repository;
+		this.uplink = uplink;
 		this.storage = storage;
+		this.cubeDiffScheme = cubeDiffScheme;
 	}
 
 	public static <K, D, C> CubeBackupController<K, D, C> create(Eventloop eventloop,
 			CubeDiffScheme<D> cubeDiffScheme,
-			OTRepositoryEx<K, D> otRepository,
-			OTSystem<D> otSystem,
+			CubeUplink<K, D, ?> uplink,
 			ActiveFsChunkStorage<C> storage) {
-		return new CubeBackupController<>(eventloop, cubeDiffScheme, otRepository, otSystem, storage);
+		return new CubeBackupController<>(eventloop, uplink, storage, cubeDiffScheme);
 	}
 
-	private final AsyncSupplier<Void> backup = reuse(this::backupHead);
+	private final AsyncSupplier<Void> backup = reuse(this::doBackup);
 
 	@SuppressWarnings("UnusedReturnValue")
 	public Promise<Void> backup() {
 		return backup.get();
 	}
 
-	public Promise<Void> backupHead() {
-		return repository.getHeads()
-				.thenEx(wrapException(e -> new CubeException("Failed to get heads", e)))
-				.then(heads -> {
-					if (heads.isEmpty()) {
-						return Promise.ofException(new CubeException("Heads are empty"));
-					}
-					return backup(first(heads));
-				})
+	public Promise<Void> doBackup() {
+		return uplink.checkout()
+				.thenEx(wrapException(e -> new CubeException("Failed to check out", e)))
+				.then(fetchData -> Promises.sequence(
+						() -> backupChunks(fetchData.getCommitId(), chunksInDiffs(cubeDiffScheme, fetchData.getDiffs())),
+						() -> backupDb(fetchData.getCommitId())))
 				.whenComplete(promiseBackup.recordStats())
 				.whenComplete(toLogger(logger, thisMethod()));
-	}
-
-	public Promise<Void> backup(K commitId) {
-		return Promises.toTuple(repository.loadCommit(commitId), checkout(repository, otSystem, commitId))
-				.thenEx(wrapException(e -> new CubeException("Failed to check out commit '" + commitId + '\'', e)))
-				.then(tuple -> Promises.sequence(
-						() -> backupChunks(commitId, chunksInDiffs(cubeDiffScheme, tuple.getValue2())),
-						() -> backupDb(tuple.getValue1(), tuple.getValue2())))
-				.whenComplete(toLogger(logger, thisMethod(), commitId));
 	}
 
 	private Promise<Void> backupChunks(K commitId, Set<C> chunkIds) {
@@ -118,15 +96,15 @@ public final class CubeBackupController<K, D, C> implements EventloopJmxBeanEx {
 				.thenEx(wrapException(e -> new CubeException("Failed to backup chunks on storage: " + storage, e)))
 				.whenComplete(promiseBackupChunks.recordStats())
 				.whenComplete(logger.isTraceEnabled() ?
-						toLogger(logger, TRACE, thisMethod(), chunkIds) :
-						toLogger(logger, thisMethod(), Utils.toString(chunkIds)));
+						toLogger(logger, TRACE, thisMethod(), commitId, chunkIds) :
+						toLogger(logger, thisMethod(), commitId, Utils.toString(chunkIds)));
 	}
 
-	private Promise<Void> backupDb(OTCommit<K, D> commit, List<D> snapshot) {
-		return repository.backup(commit, snapshot)
-				.thenEx(wrapException(e -> new CubeException("Failed to backup chunks in repository: " + repository, e)))
+	private Promise<Void> backupDb(K revisionId) {
+		return uplink.backup(revisionId)
+				.thenEx(wrapException(e -> new CubeException("Failed to backup chunks in repository: " + uplink, e)))
 				.whenComplete(promiseBackupDb.recordStats())
-				.whenComplete(toLogger(logger, thisMethod(), commit, snapshot));
+				.whenComplete(toLogger(logger, thisMethod(), revisionId));
 	}
 
 	@NotNull
