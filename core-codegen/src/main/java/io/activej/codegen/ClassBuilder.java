@@ -31,6 +31,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.nio.file.Path;
@@ -61,6 +62,9 @@ public final class ClassBuilder<T> implements WithInitializer<ClassBuilder<T>> {
 	public static final String CLASS_BUILDER_MARKER = "$GENERATED";
 	public static final String PACKAGE_PREFIX = getStringSetting(ClassBuilder.class, "packagePrefix", "io.activej.codegen.");
 	public static final Path DEFAULT_SAVE_DIR = getPathSetting(ClassBuilder.class, "saveDir", null);
+	public static final BytecodeOutput DEFAULT_BYTECODE_OUTPUT = DEFAULT_SAVE_DIR == null ?
+			BytecodeOutput.none() :
+			BytecodeOutput.toDirectory(DEFAULT_SAVE_DIR);
 
 	private static final AtomicInteger COUNTER = new AtomicInteger();
 	private static final ConcurrentHashMap<Integer, Object> STATIC_CONSTANTS = new ConcurrentHashMap<>();
@@ -68,24 +72,24 @@ public final class ClassBuilder<T> implements WithInitializer<ClassBuilder<T>> {
 	private final DefiningClassLoader classLoader;
 	private final String className;
 
-	protected final Class<?> superclass;
-	protected final List<Class<?>> interfaces;
+	final Class<?> superclass;
+	final List<Class<?>> interfaces;
 	@Nullable
 	private ClassKey classKey;
-	private Path bytecodeSaveDir = DEFAULT_SAVE_DIR;
+	private BytecodeOutput bytecodeOutput = DEFAULT_BYTECODE_OUTPUT;
 	@Nullable
 	private String customClassName;
 
-	protected final Map<String, Class<?>> fields = new LinkedHashMap<>();
-	protected final Set<String> fieldsFinal = new HashSet<>();
-	protected final Set<String> fieldsStatic = new HashSet<>();
-	protected final Map<String, Expression> fieldExpressions = new HashMap<>();
+	final Map<String, Class<?>> fields = new LinkedHashMap<>();
+	final Set<String> fieldsFinal = new HashSet<>();
+	final Set<String> fieldsStatic = new HashSet<>();
+	final Map<String, Expression> fieldExpressions = new HashMap<>();
 
-	protected final Map<Method, Expression> methods = new LinkedHashMap<>();
-	protected final Map<Method, Expression> staticMethods = new LinkedHashMap<>();
+	final Map<Method, Expression> methods = new LinkedHashMap<>();
+	final Map<Method, Expression> staticMethods = new LinkedHashMap<>();
 
-	protected final Map<Method, Expression> constructors = new LinkedHashMap<>();
-	protected final List<Expression> staticInitializers = new ArrayList<>();
+	final Map<Method, Expression> constructors = new LinkedHashMap<>();
+	final List<Expression> staticInitializers = new ArrayList<>();
 
 	// region builders
 
@@ -125,7 +129,12 @@ public final class ClassBuilder<T> implements WithInitializer<ClassBuilder<T>> {
 	}
 
 	public ClassBuilder<T> withBytecodeSaveDir(Path bytecodeSaveDir) {
-		this.bytecodeSaveDir = bytecodeSaveDir;
+		this.bytecodeOutput = BytecodeOutput.toDirectory(bytecodeSaveDir);
+		return this;
+	}
+
+	public ClassBuilder<T> withBytecodeOutput(BytecodeOutput byteCodeOutput) {
+		this.bytecodeOutput = byteCodeOutput;
 		return this;
 	}
 
@@ -428,13 +437,13 @@ public final class ClassBuilder<T> implements WithInitializer<ClassBuilder<T>> {
 			g.endMethod();
 		}
 
-		if (bytecodeSaveDir != null) {
-			String classFileName = customClassName != null ? actualClassName : actualClassName.substring(PACKAGE_PREFIX.length());
-			try (FileOutputStream fos = new FileOutputStream(bytecodeSaveDir.resolve(classFileName + ".class").toFile())) {
-				fos.write(cw.toByteArray());
-			} catch (IOException e) {
-				throw new RuntimeException(e);
+		String classFileName = customClassName != null ? actualClassName : actualClassName.substring(PACKAGE_PREFIX.length());
+		try (OutputStream outputStream = bytecodeOutput.create(classFileName)) {
+			if (outputStream != null) {
+				outputStream.write(cw.toByteArray());
 			}
+		} catch (IOException e) {
+			throw new RuntimeException(e);
 		}
 
 		cw.visitEnd();
@@ -468,5 +477,18 @@ public final class ClassBuilder<T> implements WithInitializer<ClassBuilder<T>> {
 
 	public DefiningClassLoader getClassLoader() {
 		return classLoader;
+	}
+
+	public interface BytecodeOutput {
+		@Nullable
+		OutputStream create(String className) throws IOException;
+
+		static BytecodeOutput toDirectory(Path directory) {
+			return className -> new FileOutputStream(directory.resolve(className + ".class").toFile());
+		}
+
+		static BytecodeOutput none() {
+			return $ -> null;
+		}
 	}
 }
