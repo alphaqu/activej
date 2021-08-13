@@ -5,6 +5,6 @@ CREATE TABLE IF NOT EXISTS `{position}`
     `filename`     VARCHAR(255) NOT NULL,
     `remainder`    INT          NOT NULL,
     `position`     BIGINT       NOT NULL,
-    `added_at`     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
+    FOREIGN KEY (`revision_id`) REFERENCES {revision} (`revision`) ON DELETE CASCADE
 ) ENGINE = InnoDB
     DEFAULT CHARSET = utf8;

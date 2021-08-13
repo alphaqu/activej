@@ -398,8 +398,8 @@ public final class ReportingTest {
 
 	@After
 	public void after() {
-		cubeHttpServer.closeFuture();
-		eventloop.run();
+		if (cubeHttpServer != null) cubeHttpServer.closeFuture();
+		if (eventloop != null) eventloop.run();
 	}
 
 	@Test

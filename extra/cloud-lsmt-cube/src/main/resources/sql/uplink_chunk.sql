@@ -8,7 +8,21 @@ CREATE TABLE IF NOT EXISTS `{chunk}`
     `item_count`       INT          NOT NULL,
     `added_revision`   BIGINT       NOT NULL,
     `removed_revision` BIGINT       NULL,
-    `last_modified_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (`id`)
+    PRIMARY KEY (`id`),
+    FOREIGN KEY (`added_revision`) REFERENCES {revision} (`revision`) ON DELETE CASCADE,
+    FOREIGN KEY (`removed_revision`) REFERENCES {revision} (`revision`) ON DELETE CASCADE
 ) ENGINE = InnoDB
    DEFAULT CHARSET = utf8;
+
+DROP TRIGGER IF EXISTS `{chunk}_remove_check`;
+
+CREATE TRIGGER `{chunk}_remove_check`
+   AFTER UPDATE
+   ON {chunk}
+   FOR EACH ROW
+BEGIN
+   IF OLD.`removed_revision` IS NOT NULL THEN
+       SIGNAL SQLSTATE '23513'
+           SET MESSAGE_TEXT = 'Chunk is already removed';
+   END IF;
+END;

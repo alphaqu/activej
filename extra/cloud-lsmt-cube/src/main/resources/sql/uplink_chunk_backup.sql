@@ -9,7 +9,6 @@ CREATE TABLE IF NOT EXISTS `{chunk}`
     `item_count`       INT          NOT NULL,
     `added_revision`   BIGINT       NOT NULL,
     `removed_revision` BIGINT       NULL,
-    `last_modified_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (`backup_revision`, `id`)
 ) ENGINE = InnoDB
    DEFAULT CHARSET = utf8;

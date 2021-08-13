@@ -4,13 +4,15 @@ import io.activej.aggregation.AggregationChunk;
 import io.activej.aggregation.PrimaryKey;
 import io.activej.aggregation.ot.AggregationDiff;
 import io.activej.aggregation.util.StringCodec;
+import io.activej.common.Utils;
+import io.activej.cube.ot.CubeUplinkMySql.UplinkProtoCommit;
 import io.activej.etl.LogDiff;
+import io.activej.etl.LogOT;
 import io.activej.etl.LogPositionDiff;
 import io.activej.multilog.LogFile;
 import io.activej.multilog.LogPosition;
-import io.activej.ot.OTCommitFactory.DiffsWithLevel;
 import io.activej.ot.OTState;
-import io.activej.ot.exception.OTException;
+import io.activej.ot.system.OTSystem;
 import io.activej.ot.uplink.OTUplink.FetchData;
 import io.activej.test.rules.EventloopRule;
 import org.junit.Before;
@@ -18,6 +20,7 @@ import org.junit.ClassRule;
 import org.junit.Test;
 
 import javax.sql.DataSource;
+import java.sql.SQLIntegrityConstraintViolationException;
 import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
@@ -47,6 +50,7 @@ public class CubeUplinkMySqlTest {
 
 	@ClassRule
 	public static final EventloopRule eventloopRule = new EventloopRule();
+	public static final OTSystem<LogDiff<CubeDiff>> OT_SYSTEM = LogOT.createLogOT(CubeOT.createCubeOT());
 
 	private CubeUplinkMySql uplink;
 
@@ -87,9 +91,9 @@ public class CubeUplinkMySqlTest {
 	@Test
 	public void createProtoCommit() {
 		List<LogDiff<CubeDiff>> diffs = randomDiffs();
-		DiffsWithLevel<LogDiff<CubeDiff>> protoCommit = await(uplink.createProtoCommit(0L, diffs, 0));
+		UplinkProtoCommit protoCommit = await(uplink.createProtoCommit(0L, diffs, 0));
 
-		assertEquals(0, protoCommit.getLevel());
+		assertEquals(0, protoCommit.getParentRevision());
 		assertEquals(diffs, protoCommit.getDiffs());
 	}
 
@@ -97,7 +101,7 @@ public class CubeUplinkMySqlTest {
 	public void push() {
 		List<LogDiff<CubeDiff>> diffs = randomDiffs();
 
-		DiffsWithLevel<LogDiff<CubeDiff>> protoCommit = await(uplink.createProtoCommit(0L, diffs, 0));
+		UplinkProtoCommit protoCommit = await(uplink.createProtoCommit(0L, diffs, 0));
 		await(uplink.push(protoCommit));
 
 		FetchData<Long, LogDiff<CubeDiff>> fetchData = await(uplink.checkout());
@@ -112,7 +116,7 @@ public class CubeUplinkMySqlTest {
 		List<LogDiff<CubeDiff>> totalDiffs = new ArrayList<>();
 		for (int i = 0; i < 3; i++) {
 			List<LogDiff<CubeDiff>> diffs = randomDiffs();
-			DiffsWithLevel<LogDiff<CubeDiff>> protoCommit = await(uplink.createProtoCommit((long) i, diffs, i));
+			UplinkProtoCommit protoCommit = await(uplink.createProtoCommit((long) i, diffs, i));
 			await(uplink.push(protoCommit));
 
 			FetchData<Long, LogDiff<CubeDiff>> fetchData = await(uplink.fetch((long) i));
@@ -139,7 +143,7 @@ public class CubeUplinkMySqlTest {
 				LogDiff.forCurrentPosition(CubeDiff.of(mapOf(
 						"test", AggregationDiff.of(emptySet(), setOf(chunk(10))))))
 		);
-		DiffsWithLevel<LogDiff<CubeDiff>> protoCommit = await(uplink.createProtoCommit(0L, diffs, 0));
+		UplinkProtoCommit protoCommit = await(uplink.createProtoCommit(0L, diffs, 0));
 		await(uplink.push(protoCommit));
 
 		FetchData<Long, LogDiff<CubeDiff>> fetchData = await(uplink.checkout());
@@ -152,7 +156,7 @@ public class CubeUplinkMySqlTest {
 		List<LogDiff<CubeDiff>> diffs = singletonList(
 				LogDiff.forCurrentPosition(CubeDiff.of(mapOf(
 						"test", AggregationDiff.of(setOf(chunk(10)))))));
-		DiffsWithLevel<LogDiff<CubeDiff>> protoCommit = await(uplink.createProtoCommit(0L, diffs, 0));
+		UplinkProtoCommit protoCommit = await(uplink.createProtoCommit(0L, diffs, 0));
 		await(uplink.push(protoCommit));
 
 		FetchData<Long, LogDiff<CubeDiff>> fetchData = await(uplink.checkout());
@@ -183,15 +187,97 @@ public class CubeUplinkMySqlTest {
 	}
 
 	@Test
-	public void pushAlreadyPushed() {
-		List<LogDiff<CubeDiff>> diffs = randomDiffs();
+	public void pushSameParent() {
+		List<LogDiff<CubeDiff>> diffs1 = singletonList(LogDiff.of(
+				mapOf(
+						"a", new LogPositionDiff(LogPosition.initial(), LogPosition.create(new LogFile("a1", 12), 100))
+				),
+				CubeDiff.of(
+						mapOf(
+								"aggr1", AggregationDiff.of(setOf(chunk(1), chunk(2), chunk(3))),
+								"aggr2", AggregationDiff.of(setOf(chunk(4), chunk(5), chunk(6)))
+						)
+				)
+		));
 
-		DiffsWithLevel<LogDiff<CubeDiff>> protoCommit = await(uplink.createProtoCommit(0L, diffs, 0));
-		await(uplink.push(protoCommit));
+		List<LogDiff<CubeDiff>> diffs2 = singletonList(LogDiff.of(
+				mapOf(
+						"b", new LogPositionDiff(LogPosition.initial(), LogPosition.create(new LogFile("b1", 50), 200))
+				),
+				CubeDiff.of(
+						mapOf(
+								"aggr1", AggregationDiff.of(setOf(chunk(10), chunk(20), chunk(30))),
+								"aggr2", AggregationDiff.of(setOf(chunk(40), chunk(50), chunk(60)))
+						)
+				)
+		));
 
-		Throwable exception = awaitException(uplink.push(protoCommit));
-		assertThat(exception, instanceOf(OTException.class));
-		assertEquals("Revision mismatch", exception.getMessage());
+		UplinkProtoCommit protoCommit1 = await(uplink.createProtoCommit(0L, diffs1, 0));
+		UplinkProtoCommit protoCommit2 = await(uplink.createProtoCommit(0L, diffs2, 0));
+
+		FetchData<Long, LogDiff<CubeDiff>> fetch1 = await(uplink.push(protoCommit1));
+		assertEquals(1, (long) fetch1.getCommitId());
+		assertTrue(fetch1.getDiffs().isEmpty());
+
+		FetchData<Long, LogDiff<CubeDiff>> fetch2 = await(uplink.push(protoCommit2));
+		assertEquals(2, (long) fetch2.getCommitId());
+		assertEquals(diffs1, fetch2.getDiffs());
+
+		FetchData<Long, LogDiff<CubeDiff>> checkoutData = await(uplink.checkout());
+		assertEquals(2, (long) checkoutData.getCommitId());
+
+		assertEquals(OT_SYSTEM.squash(Utils.concat(diffs1, diffs2)), checkoutData.getDiffs());
+	}
+
+	@Test
+	public void pushSameParentWithConflict() {
+		List<LogDiff<CubeDiff>> initialDiffs = singletonList(LogDiff.forCurrentPosition(
+				CubeDiff.of(
+						mapOf(
+								"aggr1", AggregationDiff.of(setOf(chunk(2), chunk(3), chunk(30), chunk(100)))
+						)
+				)
+		));
+
+		await(uplink.push(await(uplink.createProtoCommit(0L, initialDiffs, 0))));
+
+		List<LogDiff<CubeDiff>> diffs1 = singletonList(LogDiff.of(
+				mapOf(
+						"a", new LogPositionDiff(LogPosition.initial(), LogPosition.create(new LogFile("a1", 12), 100))
+				),
+				CubeDiff.of(
+						mapOf(
+								"aggr1", AggregationDiff.of(
+										setOf(chunk(1)),
+										setOf(chunk(2), chunk(3))
+								)
+						)
+				)
+		));
+
+		List<LogDiff<CubeDiff>> diffs2 = singletonList(LogDiff.of(
+				mapOf(
+						"b", new LogPositionDiff(LogPosition.initial(), LogPosition.create(new LogFile("b1", 50), 200))
+				),
+				CubeDiff.of(
+						mapOf(
+								"aggr1", AggregationDiff.of(
+										setOf(chunk(10)),
+										setOf(chunk(2), chunk(30)))
+						)
+				)
+		));
+
+		UplinkProtoCommit protoCommit1 = await(uplink.createProtoCommit(1L, diffs1, 1));
+		UplinkProtoCommit protoCommit2 = await(uplink.createProtoCommit(1L, diffs2, 1));
+
+		FetchData<Long, LogDiff<CubeDiff>> fetch1 = await(uplink.push(protoCommit1));
+		assertEquals(2, (long) fetch1.getCommitId());
+		assertTrue(fetch1.getDiffs().isEmpty());
+
+		Throwable exception = awaitException(uplink.push(protoCommit2));
+		assertThat(exception, instanceOf(SQLIntegrityConstraintViolationException.class));
+		assertEquals("Chunk is already removed", exception.getMessage());
 	}
 
 	private static void assertDiffs(List<LogDiff<CubeDiff>> expected, List<LogDiff<CubeDiff>> actual) {

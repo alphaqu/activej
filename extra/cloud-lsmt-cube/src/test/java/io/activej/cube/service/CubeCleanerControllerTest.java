@@ -9,11 +9,11 @@ import io.activej.cube.Cube;
 import io.activej.cube.IdGeneratorStub;
 import io.activej.cube.ot.CubeDiff;
 import io.activej.cube.ot.CubeUplinkMySql;
+import io.activej.cube.ot.CubeUplinkMySql.UplinkProtoCommit;
 import io.activej.cube.ot.PrimaryKeyCodecs;
 import io.activej.etl.LogDiff;
 import io.activej.eventloop.Eventloop;
 import io.activej.fs.LocalActiveFs;
-import io.activej.ot.OTCommitFactory.DiffsWithLevel;
 import io.activej.test.rules.ByteBufRule;
 import io.activej.test.rules.EventloopRule;
 import org.junit.Before;
@@ -105,19 +105,19 @@ public class CubeCleanerControllerTest {
 		uplink.initialize();
 		uplink.truncateTables();
 
-		DiffsWithLevel<LogDiff<CubeDiff>> proto1 = await(uplink.createProtoCommit(0L, emptyList(), 0));
+		UplinkProtoCommit proto1 = await(uplink.createProtoCommit(0L, emptyList(), 0));
 		await(uplink.push(proto1)); // 1N
 
-		DiffsWithLevel<LogDiff<CubeDiff>> proto2 = await(uplink.createProtoCommit(1L, emptyList(), 1));
+		UplinkProtoCommit proto2 = await(uplink.createProtoCommit(1L, emptyList(), 1));
 		await(uplink.push(proto2)); // 2N
 
-		DiffsWithLevel<LogDiff<CubeDiff>> proto3 = await(uplink.createProtoCommit(2L, emptyList(), 2));
+		UplinkProtoCommit proto3 = await(uplink.createProtoCommit(2L, emptyList(), 2));
 		await(uplink.push(proto3)); // 3N
 
-		DiffsWithLevel<LogDiff<CubeDiff>> proto4 = await(uplink.createProtoCommit(3L, emptyList(), 3));
+		UplinkProtoCommit proto4 = await(uplink.createProtoCommit(3L, emptyList(), 3));
 		await(uplink.push(proto4)); // 4S
 
-		DiffsWithLevel<LogDiff<CubeDiff>> proto5 = await(uplink.createProtoCommit(4L, emptyList(), 4));
+		UplinkProtoCommit proto5 = await(uplink.createProtoCommit(4L, emptyList(), 4));
 		await(uplink.push(proto5)); // 5N
 	}
 }
