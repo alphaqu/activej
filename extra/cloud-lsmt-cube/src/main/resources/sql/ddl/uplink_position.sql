@@ -4,7 +4,6 @@ CREATE TABLE IF NOT EXISTS `{position}`
     `partition_id` VARCHAR(255) NOT NULL,
     `filename`     VARCHAR(255) NOT NULL,
     `remainder`    INT          NOT NULL,
-    `position`     BIGINT       NOT NULL,
-    FOREIGN KEY (`revision_id`) REFERENCES {revision} (`revision`) ON DELETE CASCADE
+    `position`     BIGINT       NOT NULL
 ) ENGINE = InnoDB
     DEFAULT CHARSET = utf8;

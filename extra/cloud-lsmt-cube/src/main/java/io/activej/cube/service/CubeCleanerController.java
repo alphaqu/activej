@@ -51,8 +51,6 @@ public final class CubeCleanerController<K, D, C> implements EventloopJmxBeanEx 
 
 	private Duration chunksCleanupDelay = DEFAULT_CHUNKS_CLEANUP_DELAY;
 
-	private Duration freezeTimeout;
-
 	private final PromiseStats promiseCleanup = PromiseStats.create(DEFAULT_SMOOTHING_WINDOW);
 	private final PromiseStats promiseCleanupCollectRequiredChunks = PromiseStats.create(DEFAULT_SMOOTHING_WINDOW);
 	private final PromiseStats promiseCleanupRepository = PromiseStats.create(DEFAULT_SMOOTHING_WINDOW);
@@ -77,11 +75,6 @@ public final class CubeCleanerController<K, D, C> implements EventloopJmxBeanEx 
 		return this;
 	}
 
-	public CubeCleanerController<K, D, C> withFreezeTimeout(Duration freezeTimeout) {
-		this.freezeTimeout = freezeTimeout;
-		return this;
-	}
-
 	private final AsyncSupplier<Void> cleanup = reuse(this::doCleanup);
 
 	public Promise<Void> cleanup() {
@@ -89,11 +82,11 @@ public final class CubeCleanerController<K, D, C> implements EventloopJmxBeanEx 
 	}
 
 	private Promise<Void> doCleanup() {
-		Instant safePoint = eventloop.currentInstant().minus(freezeTimeout);
+		Instant safePoint = eventloop.currentInstant().minus(chunksCleanupDelay);
 
-		return uplink.<C>getRequiredChunks(safePoint)
+		return uplink.<C>getRequiredChunks()
 				.then(requiredChunks -> chunksStorage.checkRequiredChunks(requiredChunks)
-						.then(() -> chunksStorage.cleanup(requiredChunks, safePoint.minus(chunksCleanupDelay))
+						.then(() -> chunksStorage.cleanup(requiredChunks, safePoint)
 								.whenComplete(promiseCleanupChunks.recordStats()))
 						.whenComplete(logger.isTraceEnabled() ?
 								toLogger(logger, TRACE, thisMethod(), safePoint, requiredChunks) :
@@ -108,16 +101,6 @@ public final class CubeCleanerController<K, D, C> implements EventloopJmxBeanEx 
 	@JmxAttribute
 	public void setChunksCleanupDelay(Duration chunksCleanupDelay) {
 		this.chunksCleanupDelay = chunksCleanupDelay;
-	}
-
-	@JmxAttribute
-	public Duration getFreezeTimeout() {
-		return freezeTimeout;
-	}
-
-	@JmxAttribute
-	public void setFreezeTimeout(Duration freezeTimeout) {
-		this.freezeTimeout = freezeTimeout;
 	}
 
 	@JmxAttribute

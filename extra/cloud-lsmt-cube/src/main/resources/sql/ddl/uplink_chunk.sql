@@ -8,9 +8,7 @@ CREATE TABLE IF NOT EXISTS `{chunk}`
     `item_count`       INT          NOT NULL,
     `added_revision`   BIGINT       NOT NULL,
     `removed_revision` BIGINT       NULL,
-    PRIMARY KEY (`id`),
-    FOREIGN KEY (`added_revision`) REFERENCES {revision} (`revision`) ON DELETE CASCADE,
-    FOREIGN KEY (`removed_revision`) REFERENCES {revision} (`revision`) ON DELETE CASCADE
+    PRIMARY KEY (`id`)
 ) ENGINE = InnoDB
    DEFAULT CHARSET = utf8;
 

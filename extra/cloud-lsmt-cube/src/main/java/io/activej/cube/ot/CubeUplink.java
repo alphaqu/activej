@@ -19,12 +19,9 @@ package io.activej.cube.ot;
 import io.activej.ot.uplink.OTUplink;
 import io.activej.promise.Promise;
 
-import java.time.Instant;
 import java.util.Set;
 
 public interface CubeUplink<K, D, PC> extends OTUplink<K, D, PC> {
 
-	<C> Promise<Set<C>> getRequiredChunks(Instant safePoint);
-
-	Promise<Void> backup(K revisionId);
+	<C> Promise<Set<C>> getRequiredChunks();
 }

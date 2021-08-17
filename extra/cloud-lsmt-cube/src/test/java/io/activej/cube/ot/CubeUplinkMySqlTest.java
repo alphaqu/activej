@@ -25,8 +25,7 @@ import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 
-import static io.activej.common.Utils.mapOf;
-import static io.activej.common.Utils.setOf;
+import static io.activej.common.Utils.*;
 import static io.activej.cube.TestUtils.initializeUplink;
 import static io.activej.promise.TestUtils.await;
 import static io.activej.promise.TestUtils.awaitException;
@@ -278,6 +277,45 @@ public class CubeUplinkMySqlTest {
 		Throwable exception = awaitException(uplink.push(protoCommit2));
 		assertThat(exception, instanceOf(SQLIntegrityConstraintViolationException.class));
 		assertEquals("Chunk is already removed", exception.getMessage());
+	}
+
+	@Test
+	public void getRequiredChunks() {
+		List<LogDiff<CubeDiff>> initialDiffs = singletonList(LogDiff.forCurrentPosition(
+				CubeDiff.of(
+						mapOf(
+								"aggr1", AggregationDiff.of(setOf(chunk(2), chunk(3), chunk(30), chunk(100)))
+						)
+				)
+		));
+
+		await(uplink.push(await(uplink.createProtoCommit(0L, initialDiffs, 0))));
+
+		List<LogDiff<CubeDiff>> diffs1 = singletonList(LogDiff.forCurrentPosition(
+				CubeDiff.of(
+						mapOf(
+								"aggr1", AggregationDiff.of(
+										setOf(chunk(1)),
+										setOf(chunk(2), chunk(3))
+								)
+						)
+				)
+		));
+
+		UplinkProtoCommit protoCommit1 = await(uplink.createProtoCommit(1L, diffs1, 1));
+
+		FetchData<Long, LogDiff<CubeDiff>> fetchedAfterPush = await(uplink.push(protoCommit1));
+		assertEquals(2, (long) fetchedAfterPush.getCommitId());
+		assertTrue(fetchedAfterPush.getDiffs().isEmpty());
+
+		FetchData<Long, LogDiff<CubeDiff>> checkoutData = await(uplink.checkout());
+		assertEquals(2, (long) fetchedAfterPush.getCommitId());
+		LogDiff<CubeDiff> expected = LogDiff.forCurrentPosition(listOf(CubeDiff.of(mapOf(
+				"aggr1", AggregationDiff.of(setOf(chunk(1), chunk(30), chunk(100)))
+		))));
+		assertDiffs(singletonList(expected), checkoutData.getDiffs());
+
+		assertEquals(setOf(1L, 2L, 3L, 30L, 100L), await(uplink.getRequiredChunks()));
 	}
 
 	private static void assertDiffs(List<LogDiff<CubeDiff>> expected, List<LogDiff<CubeDiff>> actual) {

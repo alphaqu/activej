@@ -84,7 +84,7 @@ public class CubeCleanerControllerTest {
 
 		CubeCleanerController<Long, LogDiff<CubeDiff>, Long> cleanerController = CubeCleanerController.create(eventloop,
 						uplink, (ActiveFsChunkStorage<Long>) aggregationChunkStorage)
-				.withFreezeTimeout(Duration.ofMillis(0));
+				.withChunksCleanupDelay(Duration.ofMillis(0));
 
 		await(cleanerController.cleanup());
 	}
@@ -96,7 +96,7 @@ public class CubeCleanerControllerTest {
 
 		CubeCleanerController<Long, LogDiff<CubeDiff>, Long> cleanerController = CubeCleanerController.create(eventloop,
 						uplink, (ActiveFsChunkStorage<Long>) aggregationChunkStorage)
-				.withFreezeTimeout(Duration.ofSeconds(10));
+				.withChunksCleanupDelay(Duration.ofSeconds(10));
 
 		await(cleanerController.cleanup());
 	}

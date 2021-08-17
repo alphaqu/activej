@@ -33,31 +33,26 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.sql.*;
-import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
 
 import static io.activej.common.Checks.checkArgument;
-import static io.activej.common.Checks.checkState;
 import static io.activej.common.Utils.transformMap;
+import static io.activej.cube.Utils.executeSqlScript;
+import static io.activej.cube.Utils.loadResource;
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static java.sql.Connection.TRANSACTION_READ_UNCOMMITTED;
 import static java.util.Collections.*;
 import static java.util.stream.Collectors.joining;
 
 public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>, CubeUplinkMySql.UplinkProtoCommit> {
 	private static final Logger logger = LoggerFactory.getLogger(CubeUplinkMySql.class);
 
-	public static final String DEFAULT_REVISION_TABLE = ApplicationSettings.getString(CubeUplinkMySql.class, "revisionTable", "revision");
-	public static final String DEFAULT_POSITION_TABLE = ApplicationSettings.getString(CubeUplinkMySql.class, "positionTable", "position");
-	public static final String DEFAULT_CHUNK_TABLE = ApplicationSettings.getString(CubeUplinkMySql.class, "chunkTable", "chunk");
-	public static final String DEFAULT_POSITION_BACKUP_TABLE = ApplicationSettings.getString(CubeUplinkMySql.class, "positionBackupTable", null);
-	public static final String DEFAULT_CHUNK_BACKUP_TABLE = ApplicationSettings.getString(CubeUplinkMySql.class, "chunkBackupTable", null);
+	public static final String REVISION_TABLE = ApplicationSettings.getString(CubeUplinkMySql.class, "revisionTable", "revision");
+	public static final String POSITION_TABLE = ApplicationSettings.getString(CubeUplinkMySql.class, "positionTable", "position");
+	public static final String CHUNK_TABLE = ApplicationSettings.getString(CubeUplinkMySql.class, "chunkTable", "chunk");
 
 	private static final MeasuresValidator NO_MEASURE_VALIDATION = ($1, $2) -> {};
 
@@ -68,11 +63,8 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 
 	private MeasuresValidator measuresValidator = NO_MEASURE_VALIDATION;
 
-	private String tableRevision = DEFAULT_REVISION_TABLE;
-	private String tablePosition = DEFAULT_POSITION_TABLE;
-	private String tableChunk = DEFAULT_CHUNK_TABLE;
-	private String tablePositionBackup = DEFAULT_POSITION_BACKUP_TABLE;
-	private String tableChunkBackup = DEFAULT_CHUNK_BACKUP_TABLE;
+	@Nullable
+	private String createdBy = null;
 
 	private CubeUplinkMySql(Executor executor, DataSource dataSource, PrimaryKeyCodecs primaryKeyCodecs) {
 		this.executor = executor;
@@ -84,24 +76,13 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 		return new CubeUplinkMySql(executor, dataSource, primaryKeyCodecs);
 	}
 
-	public CubeUplinkMySql withCustomTableNames(String tableRevision, String tablePosition, String tableChunk) {
-		this.tableRevision = tableRevision;
-		this.tablePosition = tablePosition;
-		this.tableChunk = tableChunk;
-		return this;
-	}
-
-	public CubeUplinkMySql withCustomTableNames(String tableRevision, String tablePosition, String tableChunk, String tablePositionBackup, String tableChunkBackup) {
-		this.tableRevision = tableRevision;
-		this.tablePosition = tablePosition;
-		this.tableChunk = tableChunk;
-		this.tablePositionBackup = tablePositionBackup;
-		this.tableChunkBackup = tableChunkBackup;
-		return this;
-	}
-
 	public CubeUplinkMySql withMeasuresValidator(MeasuresValidator measuresValidator) {
 		this.measuresValidator = measuresValidator;
+		return this;
+	}
+
+	public CubeUplinkMySql withCreatedBy(String createdBy) {
+		this.createdBy = createdBy;
 		return this;
 	}
 
@@ -218,9 +199,10 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 
 							newRevision = revision + 1;
 							try (PreparedStatement ps = connection.prepareStatement(sql("" +
-									"INSERT INTO {revision} (`revision`) VALUE (?)"
+									"INSERT INTO {revision} (`revision`, `created_by`) VALUES (?,?)"
 							))) {
 								ps.setLong(1, newRevision);
+								ps.setString(2, createdBy);
 								ps.executeUpdate();
 								break;
 							} catch (SQLIntegrityConstraintViolationException ignored) {
@@ -268,19 +250,13 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 
 	@Override
 	@SuppressWarnings("unchecked")
-	public Promise<Set<Long>> getRequiredChunks(Instant safePoint) {
+	public Promise<Set<Long>> getRequiredChunks() {
 		return Promise.ofBlockingCallable(executor,
 				() -> {
 					try (Connection connection = dataSource.getConnection()) {
 						try (PreparedStatement ps = connection.prepareStatement(sql("" +
-								"SELECT c.`id` " +
-								"FROM {chunk} c" +
-								" INNER JOIN {revision} r" +
-								" ON r.revision=c.added_revision " +
-								"WHERE c.`removed_revision` IS NULL OR r.`added_at`>?"
+								"SELECT `id` FROM {chunk}"
 						))) {
-							ps.setTimestamp(1, Timestamp.from(safePoint));
-
 							ResultSet resultSet = ps.executeQuery();
 
 							Set<Long> requiredChunks = new HashSet<>();
@@ -289,29 +265,6 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 							}
 							return requiredChunks;
 						}
-					}
-				});
-	}
-
-	@Override
-	public Promise<Void> backup(Long revisionId) {
-		boolean backupPositions = tablePositionBackup != null;
-		boolean backupChunks = tableChunkBackup != null;
-		checkState(backupPositions || backupChunks, "Both backup tables are not set");
-
-		boolean transactionNeeded = backupPositions && backupChunks;
-
-		return Promise.ofBlockingRunnable(executor,
-				() -> {
-					try (Connection connection = dataSource.getConnection()) {
-						if (transactionNeeded) connection.setAutoCommit(false);
-
-						connection.setTransactionIsolation(TRANSACTION_READ_UNCOMMITTED);
-
-						if (backupPositions) backupPositions(connection, revisionId);
-						if (backupChunks) backupChunks(connection, revisionId);
-
-						if (transactionNeeded) connection.commit();
 					}
 				});
 	}
@@ -369,7 +322,6 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 
 	private Map<String, LogPositionDiff> fetchPositionDiffs(Connection connection, long from, @Nullable Long to) throws SQLException {
 		Map<String, LogPositionDiff> positions = new HashMap<>();
-		// TODO: maybe filter out on DB side ?
 		try (PreparedStatement ps = connection.prepareStatement(sql("" +
 				"SELECT p.`partition_id`, p.`filename`, p.`remainder`, p.`position`, g.`to` " +
 				"FROM {position} p" +
@@ -419,38 +371,6 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 			}
 		}
 		return positions;
-	}
-
-	private void backupChunks(Connection connection, Long revisionId) throws SQLException {
-		try (PreparedStatement ps = connection.prepareStatement(sql("" +
-				"INSERT INTO {chunk_backup} " +
-
-				"SELECT ?, `id`, `aggregation`, `measures`, `min_key`, `max_key`, `item_count`, `added_revision`," +
-				" IF(`removed_revision`<=?, `removed_revision`, NULL), `last_modified_at` " +
-
-				"FROM {chunk}" +
-				"WHERE `added_revision`<=?"
-		))) {
-			ps.setLong(1, revisionId);
-			ps.setLong(2, revisionId);
-			ps.setLong(3, revisionId);
-
-			ps.executeUpdate();
-		}
-	}
-
-	private void backupPositions(Connection connection, Long revisionId) throws SQLException {
-		try (PreparedStatement ps = connection.prepareStatement(sql("" +
-				"INSERT INTO {position_backup} " +
-				"SELECT ?, {position}.* " +
-				"FROM {position} " +
-				"WHERE {position}.`revision_id`<=?"
-		))) {
-			ps.setLong(1, revisionId);
-			ps.setLong(2, revisionId);
-
-			ps.executeUpdate();
-		}
 	}
 
 	private void addChunks(Connection connection, long newRevision, Set<ChunkWithAggregationId> chunks) throws SQLException {
@@ -536,52 +456,25 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 
 	private String sql(String sql) {
 		return sql
-				.replace("{revision}", tableRevision)
-				.replace("{position}", tablePosition)
-				.replace("{chunk}", tableChunk)
-				.replace("{position_backup}", Objects.toString(tablePositionBackup))
-				.replace("{chunk_backup}", Objects.toString(tableChunkBackup));
+				.replace("{revision}", REVISION_TABLE)
+				.replace("{position}", POSITION_TABLE)
+				.replace("{chunk}", CHUNK_TABLE);
 	}
 
 	public void initialize() throws IOException, SQLException {
 		logger.trace("Initializing tables");
-		execute(dataSource, sql(new String(loadResource("sql/uplink_revision.sql"), UTF_8)));
-		execute(dataSource, sql(new String(loadResource("sql/uplink_chunk.sql"), UTF_8)));
-		execute(dataSource, sql(new String(loadResource("sql/uplink_position.sql"), UTF_8)));
-		if (tablePositionBackup != null) {
-			execute(dataSource, sql(new String(loadResource("sql/uplink_position_backup.sql"), UTF_8)));
-		}
-		if (tableChunkBackup != null) {
-			execute(dataSource, sql(new String(loadResource("sql/uplink_chunk_backup.sql"), UTF_8)));
-		}
-	}
-
-	private static byte[] loadResource(String name) throws IOException {
-		try (InputStream stream = Thread.currentThread().getContextClassLoader().getResourceAsStream(name)) {
-			assert stream != null;
-			ByteArrayOutputStream baos = new ByteArrayOutputStream();
-			byte[] buffer = new byte[4096];
-			int size;
-			while ((size = stream.read(buffer)) != -1) {
-				baos.write(buffer, 0, size);
-			}
-			return baos.toByteArray();
-		}
-	}
-
-	private static void execute(DataSource dataSource, String sql) throws SQLException {
-		try (Connection connection = dataSource.getConnection()) {
-			try (Statement statement = connection.createStatement()) {
-				statement.execute(sql);
-			}
-		}
+		executeSqlScript(dataSource, sql(new String(loadResource("sql/ddl/uplink_revision.sql"), UTF_8)));
+		executeSqlScript(dataSource, sql(new String(loadResource("sql/ddl/uplink_chunk.sql"), UTF_8)));
+		executeSqlScript(dataSource, sql(new String(loadResource("sql/ddl/uplink_position.sql"), UTF_8)));
 	}
 
 	public void truncateTables() throws SQLException {
 		logger.trace("Truncate tables");
 		try (Connection connection = dataSource.getConnection()) {
 			try (Statement statement = connection.createStatement()) {
-				statement.execute(sql("DELETE FROM {revision} WHERE `revision` != 0"));
+				statement.execute(sql("TRUNCATE TABLE {chunk}"));
+				statement.execute(sql("TRUNCATE TABLE {position}"));
+				statement.execute(sql("DELETE FROM {revision} WHERE `revision`!=0"));
 			}
 		}
 	}
