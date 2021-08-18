@@ -1,4 +1,4 @@
-package io.activej.cube.ot;
+package io.activej.cube.linear;
 
 import com.dslplatform.json.ObjectConverter;
 import com.dslplatform.json.StringConverter;
@@ -7,7 +7,9 @@ import io.activej.aggregation.PrimaryKey;
 import io.activej.aggregation.ot.AggregationDiff;
 import io.activej.aggregation.util.JsonCodec;
 import io.activej.common.Utils;
-import io.activej.cube.ot.CubeUplinkMySql.UplinkProtoCommit;
+import io.activej.cube.linear.CubeUplinkMySql.UplinkProtoCommit;
+import io.activej.cube.ot.CubeDiff;
+import io.activej.cube.ot.CubeOT;
 import io.activej.etl.LogDiff;
 import io.activej.etl.LogOT;
 import io.activej.etl.LogPositionDiff;

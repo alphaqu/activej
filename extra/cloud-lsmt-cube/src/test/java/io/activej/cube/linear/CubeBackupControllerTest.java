@@ -1,4 +1,4 @@
-package io.activej.cube.service;
+package io.activej.cube.linear;
 
 import io.activej.aggregation.ActiveFsChunkStorage;
 import io.activej.aggregation.AggregationChunk;
@@ -11,10 +11,8 @@ import io.activej.csp.process.frames.LZ4FrameFormat;
 import io.activej.cube.Cube;
 import io.activej.cube.IdGeneratorStub;
 import io.activej.cube.exception.CubeException;
+import io.activej.cube.linear.CubeUplinkMySql.UplinkProtoCommit;
 import io.activej.cube.ot.CubeDiff;
-import io.activej.cube.ot.CubeUplinkMySql;
-import io.activej.cube.ot.CubeUplinkMySql.UplinkProtoCommit;
-import io.activej.cube.ot.PrimaryKeyCodecs;
 import io.activej.etl.LogDiff;
 import io.activej.etl.LogPositionDiff;
 import io.activej.eventloop.Eventloop;

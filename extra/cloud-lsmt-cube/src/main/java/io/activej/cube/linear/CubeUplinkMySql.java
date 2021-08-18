@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.activej.cube.ot;
+package io.activej.cube.linear;
 
 import com.dslplatform.json.DslJson;
 import com.dslplatform.json.JsonReader;
@@ -28,6 +28,7 @@ import io.activej.aggregation.util.JsonCodec;
 import io.activej.common.ApplicationSettings;
 import io.activej.common.exception.MalformedDataException;
 import io.activej.common.tuple.Tuple2;
+import io.activej.cube.ot.CubeDiff;
 import io.activej.etl.LogDiff;
 import io.activej.etl.LogPositionDiff;
 import io.activej.multilog.LogFile;
@@ -67,6 +68,10 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 
 	private final PrimaryKeyCodecs primaryKeyCodecs;
 
+	private String tableRevision = REVISION_TABLE;
+	private String tablePosition = POSITION_TABLE;
+	private String tableChunk = CHUNK_TABLE;
+
 	private MeasuresValidator measuresValidator = NO_MEASURE_VALIDATION;
 
 	@Nullable
@@ -84,6 +89,13 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 
 	public CubeUplinkMySql withMeasuresValidator(MeasuresValidator measuresValidator) {
 		this.measuresValidator = measuresValidator;
+		return this;
+	}
+
+	public CubeUplinkMySql withCustomTableNames(String tableRevision, String tablePosition, String tableChunk) {
+		this.tableRevision = tableRevision;
+		this.tablePosition = tablePosition;
+		this.tableChunk = tableChunk;
 		return this;
 	}
 
@@ -474,9 +486,9 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 
 	private String sql(String sql) {
 		return sql
-				.replace("{revision}", REVISION_TABLE)
-				.replace("{position}", POSITION_TABLE)
-				.replace("{chunk}", CHUNK_TABLE);
+				.replace("{revision}", tableRevision)
+				.replace("{position}", tablePosition)
+				.replace("{chunk}", tableChunk);
 	}
 
 	public void initialize() throws IOException, SQLException {

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.activej.cube.ot;
+package io.activej.cube.linear;
 
 import io.activej.ot.uplink.OTUplink;
 import io.activej.promise.Promise;

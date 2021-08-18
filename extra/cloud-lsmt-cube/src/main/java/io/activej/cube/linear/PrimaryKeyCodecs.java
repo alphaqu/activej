@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.activej.cube.ot;
+package io.activej.cube.linear;
 
 import io.activej.aggregation.Aggregation;
 import io.activej.aggregation.PrimaryKey;

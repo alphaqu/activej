@@ -17,175 +17,143 @@
 package io.activej.cube.service;
 
 import io.activej.aggregation.ActiveFsChunkStorage;
-import io.activej.common.ApplicationSettings;
+import io.activej.async.function.AsyncSupplier;
+import io.activej.common.Utils;
 import io.activej.cube.exception.CubeException;
+import io.activej.cube.ot.CubeDiffScheme;
 import io.activej.eventloop.Eventloop;
+import io.activej.eventloop.jmx.EventloopJmxBeanEx;
+import io.activej.jmx.api.attribute.JmxAttribute;
+import io.activej.jmx.api.attribute.JmxOperation;
+import io.activej.ot.OTCommit;
+import io.activej.ot.repository.OTRepositoryEx;
+import io.activej.ot.system.OTSystem;
+import io.activej.promise.Promise;
+import io.activej.promise.Promises;
+import io.activej.promise.jmx.PromiseStats;
+import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.sql.DataSource;
-import java.io.IOException;
-import java.sql.*;
-import java.util.HashSet;
+import java.time.Duration;
+import java.util.List;
 import java.util.Set;
-import java.util.concurrent.ExecutionException;
 
-import static io.activej.cube.Utils.executeSqlScript;
-import static io.activej.cube.Utils.loadResource;
-import static java.nio.charset.StandardCharsets.UTF_8;
+import static io.activej.aggregation.util.Utils.wrapException;
+import static io.activej.async.function.AsyncSuppliers.reuse;
+import static io.activej.async.util.LogUtils.Level.TRACE;
+import static io.activej.async.util.LogUtils.thisMethod;
+import static io.activej.async.util.LogUtils.toLogger;
+import static io.activej.common.Utils.first;
+import static io.activej.cube.Utils.chunksInDiffs;
+import static io.activej.ot.OTAlgorithms.checkout;
 
-public final class CubeBackupController {
+public final class CubeBackupController<K, D, C> implements EventloopJmxBeanEx {
 	private static final Logger logger = LoggerFactory.getLogger(CubeBackupController.class);
 
-	public static final String REVISION_TABLE = ApplicationSettings.getString(CubeBackupController.class, "revisionTable", "revision");
-	public static final String POSITION_TABLE = ApplicationSettings.getString(CubeBackupController.class, "positionTable", "position");
-	public static final String CHUNK_TABLE = ApplicationSettings.getString(CubeBackupController.class, "chunkTable", "chunk");
-
-	public static final String BACKUP_TABLE = ApplicationSettings.getString(CubeBackupController.class, "backupTable", "backup");
-	public static final String BACKUP_POSITION_TABLE = ApplicationSettings.getString(CubeBackupController.class, "backupPositionTable", "backup_position");
-	public static final String BACKUP_CHUNK_TABLE = ApplicationSettings.getString(CubeBackupController.class, "backupChunkTable", "backup_chunk");
+	public static final Duration DEFAULT_SMOOTHING_WINDOW = Duration.ofMinutes(5);
 
 	private final Eventloop eventloop;
-	private final DataSource dataSource;
-	private final ActiveFsChunkStorage<Long> storage;
+	private final OTSystem<D> otSystem;
+	private final OTRepositoryEx<K, D> repository;
+	private final ActiveFsChunkStorage<C> storage;
 
-	private CubeBackupController(Eventloop eventloop,
-			DataSource dataSource,
-			ActiveFsChunkStorage<Long> storage) {
+	private final CubeDiffScheme<D> cubeDiffScheme;
+
+	private final PromiseStats promiseBackup = PromiseStats.create(DEFAULT_SMOOTHING_WINDOW);
+	private final PromiseStats promiseBackupDb = PromiseStats.create(DEFAULT_SMOOTHING_WINDOW);
+	private final PromiseStats promiseBackupChunks = PromiseStats.create(DEFAULT_SMOOTHING_WINDOW);
+
+	CubeBackupController(Eventloop eventloop,
+			CubeDiffScheme<D> cubeDiffScheme,
+			OTRepositoryEx<K, D> repository,
+			OTSystem<D> otSystem,
+			ActiveFsChunkStorage<C> storage) {
 		this.eventloop = eventloop;
-		this.dataSource = dataSource;
+		this.cubeDiffScheme = cubeDiffScheme;
+		this.otSystem = otSystem;
+		this.repository = repository;
 		this.storage = storage;
 	}
 
-	public static CubeBackupController create(Eventloop eventloop,
-			DataSource dataSource,
-			ActiveFsChunkStorage<Long> storage) {
-		return new CubeBackupController(eventloop, dataSource, storage);
+	public static <K, D, C> CubeBackupController<K, D, C> create(Eventloop eventloop,
+			CubeDiffScheme<D> cubeDiffScheme,
+			OTRepositoryEx<K, D> otRepository,
+			OTSystem<D> otSystem,
+			ActiveFsChunkStorage<C> storage) {
+		return new CubeBackupController<>(eventloop, cubeDiffScheme, otRepository, otSystem, storage);
 	}
 
-	public void backup() throws CubeException {
-		try (Connection connection = dataSource.getConnection()) {
-			connection.setAutoCommit(false);
-			long maxRevisionId = getMaxRevisionId(connection);
-			doBackup(connection, maxRevisionId);
-		} catch (SQLException e) {
-			throw new CubeException("Failed to connect to the database", e);
-		}
+	private final AsyncSupplier<Void> backup = reuse(this::backupHead);
+
+	@SuppressWarnings("UnusedReturnValue")
+	public Promise<Void> backup() {
+		return backup.get();
 	}
 
-	public void backup(long revisionId) throws CubeException {
-		try (Connection connection = dataSource.getConnection()) {
-			connection.setAutoCommit(false);
-			doBackup(connection, revisionId);
-		} catch (SQLException e) {
-			throw new CubeException("Failed to connect to the database", e);
-		}
+	public Promise<Void> backupHead() {
+		return repository.getHeads()
+				.thenEx(wrapException(e -> new CubeException("Failed to get heads", e)))
+				.then(heads -> {
+					if (heads.isEmpty()) {
+						return Promise.ofException(new CubeException("Heads are empty"));
+					}
+					return backup(first(heads));
+				})
+				.whenComplete(promiseBackup.recordStats())
+				.whenComplete(toLogger(logger, thisMethod()));
 	}
 
-	private void doBackup(Connection connection, long revisionId) throws CubeException {
-		backupDb(connection, revisionId);
-		Set<Long> chunkIds = getChunksToBackup(connection, revisionId);
-		backupChunks(chunkIds, revisionId);
-
-		try {
-			connection.commit();
-		} catch (SQLException e) {
-			throw new CubeException("Failed to commit backup transaction", e);
-		}
+	public Promise<Void> backup(K commitId) {
+		return Promises.toTuple(repository.loadCommit(commitId), checkout(repository, otSystem, commitId))
+				.thenEx(wrapException(e -> new CubeException("Failed to check out commit '" + commitId + '\'', e)))
+				.then(tuple -> Promises.sequence(
+						() -> backupChunks(commitId, chunksInDiffs(cubeDiffScheme, tuple.getValue2())),
+						() -> backupDb(tuple.getValue1(), tuple.getValue2())))
+				.whenComplete(toLogger(logger, thisMethod(), commitId));
 	}
 
-	private void backupChunks(Set<Long> chunkIds, long revisionId) throws CubeException {
-		logger.trace("Backing up chunks {} on revision {}", chunkIds, revisionId);
-
-		try {
-			eventloop.submit(() -> storage.backup(String.valueOf(revisionId), chunkIds)).get();
-		} catch (InterruptedException e) {
-			throw new CubeException("Eventloop thread was interrupted", e);
-		} catch (ExecutionException e) {
-			throw new CubeException("Failed to backup chunks on storage ", e.getCause());
-		}
-
-		logger.trace("Chunks {} are backed up on revision {}", chunkIds, revisionId);
+	private Promise<Void> backupChunks(K commitId, Set<C> chunkIds) {
+		return storage.backup(String.valueOf(commitId), chunkIds)
+				.thenEx(wrapException(e -> new CubeException("Failed to backup chunks on storage: " + storage, e)))
+				.whenComplete(promiseBackupChunks.recordStats())
+				.whenComplete(logger.isTraceEnabled() ?
+						toLogger(logger, TRACE, thisMethod(), chunkIds) :
+						toLogger(logger, thisMethod(), Utils.toString(chunkIds)));
 	}
 
-	private void backupDb(Connection connection, long revisionId) throws CubeException {
-		logger.trace("Backing up database on revision {}", revisionId);
-
-		try (Statement statement = connection.createStatement()) {
-			String backupScript = sql(new String(loadResource("sql/backup.sql"), UTF_8))
-					.replace("{backup_revision}", String.valueOf(revisionId));
-			statement.execute(backupScript);
-		} catch (SQLException | IOException e) {
-			throw new CubeException("Failed to back up database", e);
-		}
-
-		logger.trace("Database is backed up on revision {} " +
-				"Waiting for chunks to back up prior to commit", revisionId);
+	private Promise<Void> backupDb(OTCommit<K, D> commit, List<D> snapshot) {
+		return repository.backup(commit, snapshot)
+				.thenEx(wrapException(e -> new CubeException("Failed to backup chunks in repository: " + repository, e)))
+				.whenComplete(promiseBackupDb.recordStats())
+				.whenComplete(toLogger(logger, thisMethod(), commit, snapshot));
 	}
 
-	private long getMaxRevisionId(Connection connection) throws CubeException {
-		try (Statement statement = connection.createStatement()) {
-			ResultSet resultSet = statement.executeQuery(sql("SELECT MAX(`revision`) FROM {revision}"));
-
-			if (!resultSet.next()) {
-				throw new CubeException("Cube is not initialized");
-			}
-			return resultSet.getLong(1);
-		} catch (SQLException e) {
-			throw new CubeException("Failed to retrieve maximum revision ID", e);
-		}
+	@NotNull
+	@Override
+	public Eventloop getEventloop() {
+		return eventloop;
 	}
 
-	private Set<Long> getChunksToBackup(Connection connection, long revisionId) throws CubeException {
-		try (PreparedStatement stmt = connection.prepareStatement(sql("" +
-				"SELECT `id` " +
-				"FROM {backup_chunk} " +
-				"WHERE `backup_id` = ?"))) {
-			stmt.setLong(1, revisionId);
-
-			ResultSet resultSet = stmt.executeQuery();
-
-			Set<Long> chunkIds = new HashSet<>();
-			while (resultSet.next()) {
-				chunkIds.add(resultSet.getLong(1));
-			}
-			return chunkIds;
-		} catch (SQLException e) {
-			throw new CubeException("Failed to retrieve chunks to back up", e);
-		}
+	@JmxOperation
+	public void backupNow() {
+		backup();
 	}
 
-	private static String sql(String sql) {
-		return sql
-				.replace("{revision}", REVISION_TABLE)
-				.replace("{position}", POSITION_TABLE)
-				.replace("{chunk}", CHUNK_TABLE)
-				.replace("{backup}", BACKUP_TABLE)
-				.replace("{backup_position}", BACKUP_POSITION_TABLE)
-				.replace("{backup_chunk}", BACKUP_CHUNK_TABLE);
+	@JmxAttribute
+	public PromiseStats getPromiseBackup() {
+		return promiseBackup;
 	}
 
-	public void initialize() throws IOException, SQLException {
-		logger.trace("Initializing tables");
-		executeSqlScript(dataSource, sql(new String(loadResource("sql/ddl/uplink_revision.sql"), UTF_8)));
-		executeSqlScript(dataSource, sql(new String(loadResource("sql/ddl/uplink_chunk.sql"), UTF_8)));
-		executeSqlScript(dataSource, sql(new String(loadResource("sql/ddl/uplink_position.sql"), UTF_8)));
-		executeSqlScript(dataSource, sql(new String(loadResource("sql/ddl/uplink_backup.sql"), UTF_8)));
+	@JmxAttribute
+	public PromiseStats getPromiseBackupDb() {
+		return promiseBackupDb;
 	}
 
-	public void truncateTables() throws SQLException {
-		logger.trace("Truncate tables");
-		try (Connection connection = dataSource.getConnection()) {
-			try (Statement statement = connection.createStatement()) {
-				statement.execute(sql("TRUNCATE TABLE {chunk}"));
-				statement.execute(sql("TRUNCATE TABLE {position}"));
-				statement.execute(sql("DELETE FROM {revision} WHERE `revision`!=0"));
-
-				statement.execute(sql("TRUNCATE TABLE {backup}"));
-				statement.execute(sql("TRUNCATE TABLE {backup_chunk}"));
-				statement.execute(sql("TRUNCATE TABLE {backup_position}"));
-			}
-		}
+	@JmxAttribute
+	public PromiseStats getPromiseBackupChunks() {
+		return promiseBackupChunks;
 	}
+
 }
 

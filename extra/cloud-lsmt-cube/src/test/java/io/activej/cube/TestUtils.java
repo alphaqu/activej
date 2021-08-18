@@ -1,8 +1,8 @@
 package io.activej.cube;
 
 import io.activej.aggregation.AggregationChunkStorage;
+import io.activej.cube.linear.CubeUplinkMySql;
 import io.activej.cube.ot.CubeDiff;
-import io.activej.cube.ot.CubeUplinkMySql;
 import io.activej.etl.LogDiff;
 import io.activej.etl.LogOTProcessor;
 import io.activej.ot.OTCommit;
@@ -19,9 +19,13 @@ import static java.util.stream.Collectors.toSet;
 
 public final class TestUtils {
 
-	public static void initializeUplink(CubeUplinkMySql uplink) throws SQLException, IOException {
-		uplink.initialize();
-		uplink.truncateTables();
+	public static void initializeUplink(CubeUplinkMySql uplink) {
+		try {
+			uplink.initialize();
+			uplink.truncateTables();
+		} catch (IOException | SQLException e) {
+			throw new AssertionError(e);
+		}
 	}
 
 	public static void initializeRepository(OTRepositoryMySql<LogDiff<CubeDiff>> repository) {

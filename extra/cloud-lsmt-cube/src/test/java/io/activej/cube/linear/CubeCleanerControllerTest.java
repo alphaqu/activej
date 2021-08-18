@@ -1,4 +1,4 @@
-package io.activej.cube.service;
+package io.activej.cube.linear;
 
 import io.activej.aggregation.ActiveFsChunkStorage;
 import io.activej.aggregation.AggregationChunkStorage;
@@ -7,21 +7,17 @@ import io.activej.codegen.DefiningClassLoader;
 import io.activej.csp.process.frames.LZ4FrameFormat;
 import io.activej.cube.Cube;
 import io.activej.cube.IdGeneratorStub;
+import io.activej.cube.linear.CubeUplinkMySql.UplinkProtoCommit;
 import io.activej.cube.ot.CubeDiff;
-import io.activej.cube.ot.CubeDiffCodec;
-import io.activej.cube.ot.CubeDiffScheme;
-import io.activej.cube.ot.CubeOT;
 import io.activej.etl.LogDiff;
-import io.activej.etl.LogDiffCodec;
-import io.activej.etl.LogOT;
 import io.activej.eventloop.Eventloop;
 import io.activej.fs.LocalActiveFs;
-import io.activej.ot.OTCommit;
-import io.activej.ot.repository.OTRepositoryMySql;
-import io.activej.ot.system.OTSystem;
 import io.activej.test.rules.ByteBufRule;
 import io.activej.test.rules.EventloopRule;
-import org.junit.*;
+import org.junit.Before;
+import org.junit.ClassRule;
+import org.junit.Rule;
+import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import javax.sql.DataSource;
@@ -40,9 +36,7 @@ import static io.activej.promise.TestUtils.await;
 import static io.activej.test.TestUtils.dataSource;
 import static java.util.Collections.emptyList;
 
-@Ignore
 public class CubeCleanerControllerTest {
-	private static final OTSystem<LogDiff<CubeDiff>> OT_SYSTEM = LogOT.createLogOT(CubeOT.createCubeOT());
 
 	@Rule
 	public final TemporaryFolder temporaryFolder = new TemporaryFolder();
@@ -54,7 +48,7 @@ public class CubeCleanerControllerTest {
 	public static final ByteBufRule byteBufRule = new ByteBufRule();
 
 	private Eventloop eventloop;
-	private OTRepositoryMySql<LogDiff<CubeDiff>> repository;
+	private CubeUplinkMySql uplink;
 	private AggregationChunkStorage<Long> aggregationChunkStorage;
 
 	@Before
@@ -76,10 +70,9 @@ public class CubeCleanerControllerTest {
 				.withAggregation(id("pub").withDimensions("pub").withMeasures("pubRequests"))
 				.withAggregation(id("adv").withDimensions("adv").withMeasures("advRequests"));
 
-		repository = OTRepositoryMySql.create(eventloop, executor, dataSource, new IdGeneratorStub(),
-				OT_SYSTEM, LogDiffCodec.create(CubeDiffCodec.create(cube)));
-		repository.initialize();
-		repository.truncateTables();
+		uplink = CubeUplinkMySql.create(executor, dataSource, PrimaryKeyCodecs.ofCube(cube));
+		uplink.initialize();
+		uplink.truncateTables();
 	}
 
 	@Test
@@ -88,9 +81,8 @@ public class CubeCleanerControllerTest {
 		initializeRepo();
 
 		CubeCleanerController<Long, LogDiff<CubeDiff>, Long> cleanerController = CubeCleanerController.create(eventloop,
-						CubeDiffScheme.ofLogDiffs(), repository, OT_SYSTEM, (ActiveFsChunkStorage<Long>) aggregationChunkStorage)
-				.withFreezeTimeout(Duration.ofMillis(0))
-				.withExtraSnapshotsCount(1000);
+						uplink, (ActiveFsChunkStorage<Long>) aggregationChunkStorage)
+				.withChunksCleanupDelay(Duration.ofMillis(0));
 
 		await(cleanerController.cleanup());
 	}
@@ -101,31 +93,29 @@ public class CubeCleanerControllerTest {
 		initializeRepo();
 
 		CubeCleanerController<Long, LogDiff<CubeDiff>, Long> cleanerController = CubeCleanerController.create(eventloop,
-						CubeDiffScheme.ofLogDiffs(), repository, OT_SYSTEM, (ActiveFsChunkStorage<Long>) aggregationChunkStorage)
-				.withFreezeTimeout(Duration.ofSeconds(10));
+						uplink, (ActiveFsChunkStorage<Long>) aggregationChunkStorage)
+				.withChunksCleanupDelay(Duration.ofSeconds(10));
 
 		await(cleanerController.cleanup());
 	}
 
 	public void initializeRepo() throws IOException, SQLException {
-		repository.initialize();
-		repository.truncateTables();
+		uplink.initialize();
+		uplink.truncateTables();
 
-		Long id1 = await(repository.createCommitId());
-		await(repository.push(OTCommit.ofRoot(id1)));                          // 1N
+		UplinkProtoCommit proto1 = await(uplink.createProtoCommit(0L, emptyList(), 0));
+		await(uplink.push(proto1)); // 1N
 
-		Long id2 = await(repository.createCommitId());
-		await(repository.push(OTCommit.ofCommit(0, id2, id1, emptyList(), id1))); // 2N
+		UplinkProtoCommit proto2 = await(uplink.createProtoCommit(1L, emptyList(), 1));
+		await(uplink.push(proto2)); // 2N
 
-		Long id3 = await(repository.createCommitId());
-		await(repository.push(OTCommit.ofCommit(0, id3, id2, emptyList(), id2))); // 3N
+		UplinkProtoCommit proto3 = await(uplink.createProtoCommit(2L, emptyList(), 2));
+		await(uplink.push(proto3)); // 3N
 
-		Long id4 = await(repository.createCommitId());
-		await(repository.push(OTCommit.ofCommit(0, id4, id3, emptyList(), id3)));
-		await(repository.saveSnapshot(id4, emptyList()));                      // 4S
+		UplinkProtoCommit proto4 = await(uplink.createProtoCommit(3L, emptyList(), 3));
+		await(uplink.push(proto4)); // 4S
 
-		Long id5 = await(repository.createCommitId());
-		await(repository.pushAndUpdateHead(OTCommit.ofCommit(0, id5, id4, emptyList(), id4))); // 5N
+		UplinkProtoCommit proto5 = await(uplink.createProtoCommit(4L, emptyList(), 4));
+		await(uplink.push(proto5)); // 5N
 	}
-
 }

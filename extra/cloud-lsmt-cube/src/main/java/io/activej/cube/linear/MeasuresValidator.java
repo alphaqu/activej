@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.activej.cube.ot;
+package io.activej.cube.linear;
 
 import io.activej.common.exception.MalformedDataException;
 import io.activej.cube.Cube;
