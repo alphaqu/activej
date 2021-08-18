@@ -4,7 +4,6 @@ CREATE TABLE IF NOT EXISTS `backup`
     `created_at` TIMESTAMP    NOT NULL,
     `created_by` VARCHAR(255) NULL,
     `backup_started_at`   TIMESTAMP    NOT NULL  DEFAULT  CURRENT_TIMESTAMP,
-    `backup_finished_at`  TIMESTAMP    NULL,
     `backup_by`  VARCHAR(255) NULL,
     PRIMARY KEY (`revision`)
 ) ENGINE = InnoDB;

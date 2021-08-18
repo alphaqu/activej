@@ -5,10 +5,12 @@ import io.activej.aggregation.AggregationChunk;
 import io.activej.aggregation.ChunkIdCodec;
 import io.activej.aggregation.PrimaryKey;
 import io.activej.aggregation.ot.AggregationDiff;
+import io.activej.async.function.AsyncSupplier;
 import io.activej.codegen.DefiningClassLoader;
 import io.activej.csp.process.frames.LZ4FrameFormat;
 import io.activej.cube.Cube;
 import io.activej.cube.IdGeneratorStub;
+import io.activej.cube.exception.CubeException;
 import io.activej.cube.ot.CubeDiff;
 import io.activej.cube.ot.CubeUplinkMySql;
 import io.activej.cube.ot.CubeUplinkMySql.UplinkProtoCommit;
@@ -22,7 +24,6 @@ import io.activej.multilog.LogFile;
 import io.activej.multilog.LogPosition;
 import io.activej.promise.Promises;
 import io.activej.test.rules.ByteBufRule;
-import io.activej.test.rules.EventloopRule;
 import org.junit.Before;
 import org.junit.ClassRule;
 import org.junit.Rule;
@@ -36,6 +37,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.*;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
@@ -47,7 +49,7 @@ import static io.activej.bytebuf.ByteBufStrings.wrapUtf8;
 import static io.activej.common.Utils.mapOf;
 import static io.activej.common.Utils.setOf;
 import static io.activej.cube.Cube.AggregationConfig.id;
-import static io.activej.promise.TestUtils.await;
+import static io.activej.eventloop.error.FatalErrorHandlers.rethrowOnAnyError;
 import static io.activej.test.TestUtils.dataSource;
 import static java.util.Collections.*;
 import static java.util.stream.Collectors.toSet;
@@ -64,11 +66,9 @@ public class CubeBackupControllerTest {
 	public final TemporaryFolder temporaryFolder = new TemporaryFolder();
 
 	@ClassRule
-	public static final EventloopRule eventloopRule = new EventloopRule();
-
-	@ClassRule
 	public static final ByteBufRule byteBufRule = new ByteBufRule();
 
+	private Eventloop eventloop;
 	private DataSource dataSource;
 	private ActiveFs activeFs;
 	private CubeUplinkMySql uplink;
@@ -80,11 +80,17 @@ public class CubeBackupControllerTest {
 		Path aggregationsDir = temporaryFolder.newFolder().toPath();
 		Executor executor = Executors.newCachedThreadPool();
 
-		Eventloop eventloop = Eventloop.getCurrentEventloop();
+		eventloop = Eventloop.create()
+				.withFatalErrorHandler(rethrowOnAnyError());
+
+		eventloop.keepAlive(true);
+
+		Thread thread = new Thread(eventloop);
+		thread.start();
 
 		DefiningClassLoader classLoader = DefiningClassLoader.create();
 		LocalActiveFs fs = LocalActiveFs.create(eventloop, executor, aggregationsDir);
-		await(fs.start());
+		eventloop.submit(fs::start).get();
 		activeFs = fs;
 		ActiveFsChunkStorage<Long> aggregationChunkStorage = ActiveFsChunkStorage.create(eventloop, ChunkIdCodec.ofLong(), new IdGeneratorStub(),
 				LZ4FrameFormat.create(), fs);
@@ -96,14 +102,14 @@ public class CubeBackupControllerTest {
 				.withAggregation(id("pub").withDimensions("pub").withMeasures("pubRequests"))
 				.withAggregation(id("adv").withDimensions("adv").withMeasures("advRequests", "pubRequests"));
 
-		backupController = CubeBackupController.create(eventloop, executor, dataSource, aggregationChunkStorage);
+		backupController = CubeBackupController.create(eventloop, dataSource, aggregationChunkStorage);
 		uplink = CubeUplinkMySql.create(executor, dataSource, PrimaryKeyCodecs.ofCube(cube));
 		backupController.initialize();
 		backupController.truncateTables();
 	}
 
 	@Test
-	public void backup() {
+	public void backup() throws CubeException {
 		List<LogDiff<CubeDiff>> diffs1 = singletonList(
 				LogDiff.of(
 						mapOf(
@@ -115,7 +121,7 @@ public class CubeBackupControllerTest {
 								"adv", AggregationDiff.of(setOf(chunk(10), chunk(1), chunk(44)))
 						))
 				));
-		await(uplink.push(new UplinkProtoCommit(0, diffs1)));
+		await(() -> uplink.push(new UplinkProtoCommit(0, diffs1)));
 		uploadStubChunks(diffs1);
 
 		List<LogDiff<CubeDiff>> diffs2 = singletonList(
@@ -129,7 +135,7 @@ public class CubeBackupControllerTest {
 								"adv", AggregationDiff.of(setOf(chunk(512), chunk(786)), setOf(chunk(44)))
 						))
 				));
-		await(uplink.push(new UplinkProtoCommit(1, diffs2)));
+		await(() -> uplink.push(new UplinkProtoCommit(1, diffs2)));
 		uploadStubChunks(diffs2);
 
 		List<LogDiff<CubeDiff>> diffs3 = singletonList(
@@ -141,13 +147,13 @@ public class CubeBackupControllerTest {
 								"pub", AggregationDiff.of(setOf(chunk(4566)), setOf(chunk(12)))
 						))
 				));
-		await(uplink.push(new UplinkProtoCommit(2, diffs3)));
+		await(() -> uplink.push(new UplinkProtoCommit(2, diffs3)));
 		uploadStubChunks(diffs3);
 
-		await(backupController.backup(0));
-		await(backupController.backup(1));
-		await(backupController.backup(2));
-		await(backupController.backup(3));
+		backupController.backup(0);
+		backupController.backup(1);
+		backupController.backup(2);
+		backupController.backup(3);
 
 		assertBackups(0, 1, 2, 3);
 
@@ -180,8 +186,16 @@ public class CubeBackupControllerTest {
 		return AggregationChunk.create(id, MEASURES, MIN_KEY, MAX_KEY, COUNT);
 	}
 
+	private <T> T await(AsyncSupplier<T> supplier) {
+		try {
+			return eventloop.submit(supplier::get).get();
+		} catch (InterruptedException | ExecutionException e) {
+			throw new AssertionError(e);
+		}
+	}
+
 	private void uploadStubChunks(List<LogDiff<CubeDiff>> diffs) {
-		await(Promises.all(diffs.stream()
+		await(() -> Promises.all(diffs.stream()
 				.map(LogDiff::getDiffs)
 				.flatMap(Collection::stream)
 				.flatMap(CubeDiff::addedChunks)
@@ -193,15 +207,13 @@ public class CubeBackupControllerTest {
 	private void assertBackups(long... backupIds) {
 		try (Connection connection = dataSource.getConnection()) {
 			try (PreparedStatement stmt = connection.prepareStatement("" +
-					"SELECT `revision`, `backup_finished_at` IS NOT NULL " +
+					"SELECT `revision` " +
 					"FROM `backup` "
 			)) {
 				ResultSet resultSet = stmt.executeQuery();
 
 				Set<Long> ids = new HashSet<>();
 				while (resultSet.next()) {
-					assertTrue(resultSet.getBoolean(2));
-
 					ids.add(resultSet.getLong(1));
 				}
 
@@ -237,7 +249,7 @@ public class CubeBackupControllerTest {
 		}
 
 		String prefix = "backups" + ActiveFs.SEPARATOR + backupId + ActiveFs.SEPARATOR;
-		Set<Long> actualChunks = await(activeFs.list(prefix + "*" + LOG))
+		Set<Long> actualChunks = await(() -> activeFs.list(prefix + "*" + LOG))
 				.keySet()
 				.stream()
 				.map(s -> s.substring(prefix.length(), s.length() - LOG.length()))

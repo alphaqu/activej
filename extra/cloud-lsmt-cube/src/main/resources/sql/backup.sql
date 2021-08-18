@@ -28,4 +28,4 @@ INNER JOIN
 ON p.`partition_id` = g.`partition_id`
 AND p.`revision_id` = g.`max_revision`;
 
-COMMIT;
+-- COMMIT; -commit will be made after chunk files are backed up
