@@ -1,19 +1,19 @@
 package io.activej.cube.linear;
 
 import io.activej.aggregation.ActiveFsChunkStorage;
-import io.activej.aggregation.AggregationChunkStorage;
 import io.activej.aggregation.ChunkIdCodec;
+import io.activej.async.function.AsyncSupplier;
 import io.activej.codegen.DefiningClassLoader;
 import io.activej.csp.process.frames.LZ4FrameFormat;
 import io.activej.cube.Cube;
 import io.activej.cube.IdGeneratorStub;
+import io.activej.cube.TestUtils;
+import io.activej.cube.exception.CubeException;
+import io.activej.cube.linear.CubeCleanerController.ChunksCleanerService;
 import io.activej.cube.linear.CubeUplinkMySql.UplinkProtoCommit;
-import io.activej.cube.ot.CubeDiff;
-import io.activej.etl.LogDiff;
 import io.activej.eventloop.Eventloop;
 import io.activej.fs.LocalActiveFs;
 import io.activej.test.rules.ByteBufRule;
-import io.activej.test.rules.EventloopRule;
 import org.junit.Before;
 import org.junit.ClassRule;
 import org.junit.Rule;
@@ -21,9 +21,7 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import javax.sql.DataSource;
-import java.io.IOException;
 import java.nio.file.Path;
-import java.sql.SQLException;
 import java.time.Duration;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
@@ -32,7 +30,8 @@ import static io.activej.aggregation.fieldtype.FieldTypes.ofInt;
 import static io.activej.aggregation.fieldtype.FieldTypes.ofLong;
 import static io.activej.aggregation.measure.Measures.sum;
 import static io.activej.cube.Cube.AggregationConfig.id;
-import static io.activej.promise.TestUtils.await;
+import static io.activej.cube.TestUtils.initializeUplink;
+import static io.activej.eventloop.error.FatalErrorHandlers.rethrowOnAnyError;
 import static io.activej.test.TestUtils.dataSource;
 import static java.util.Collections.emptyList;
 
@@ -42,22 +41,26 @@ public class CubeCleanerControllerTest {
 	public final TemporaryFolder temporaryFolder = new TemporaryFolder();
 
 	@ClassRule
-	public static final EventloopRule eventloopRule = new EventloopRule();
-
-	@ClassRule
 	public static final ByteBufRule byteBufRule = new ByteBufRule();
 
 	private Eventloop eventloop;
+	private DataSource dataSource;
 	private CubeUplinkMySql uplink;
-	private AggregationChunkStorage<Long> aggregationChunkStorage;
+	private ActiveFsChunkStorage<Long> aggregationChunkStorage;
 
 	@Before
 	public void setUp() throws Exception {
-		DataSource dataSource = dataSource("test.properties");
+		dataSource = dataSource("test.properties");
 		Path aggregationsDir = temporaryFolder.newFolder().toPath();
 		Executor executor = Executors.newCachedThreadPool();
 
-		eventloop = Eventloop.getCurrentEventloop();
+		eventloop = Eventloop.create()
+				.withFatalErrorHandler(rethrowOnAnyError());
+
+		eventloop.keepAlive(true);
+
+		Thread thread = new Thread(eventloop);
+		thread.start();
 
 		DefiningClassLoader classLoader = DefiningClassLoader.create();
 		aggregationChunkStorage = ActiveFsChunkStorage.create(eventloop, ChunkIdCodec.ofLong(), new IdGeneratorStub(),
@@ -76,46 +79,49 @@ public class CubeCleanerControllerTest {
 	}
 
 	@Test
-	public void testCleanupWithExtraSnapshotsCount() throws IOException, SQLException {
+	public void testCleanupWithExtraSnapshotsCount() throws CubeException {
 		// 1S -> 2N -> 3N -> 4S -> 5N
 		initializeRepo();
 
-		CubeCleanerController<Long, LogDiff<CubeDiff>, Long> cleanerController = CubeCleanerController.create(eventloop,
-						uplink, (ActiveFsChunkStorage<Long>) aggregationChunkStorage)
+		ChunksCleanerService cleanerService = ChunksCleanerService.ofActiveFsChunkStorage(aggregationChunkStorage);
+		CubeCleanerController cleanerController = CubeCleanerController.create(dataSource, cleanerService)
 				.withChunksCleanupDelay(Duration.ofMillis(0));
 
-		await(cleanerController.cleanup());
+		cleanerController.cleanup();
 	}
 
 	@Test
-	public void testCleanupWithFreezeTimeout() throws IOException, SQLException {
+	public void testCleanupWithFreezeTimeout() throws CubeException {
 		// 1S -> 2N -> 3N -> 4S -> 5N
 		initializeRepo();
 
-		CubeCleanerController<Long, LogDiff<CubeDiff>, Long> cleanerController = CubeCleanerController.create(eventloop,
-						uplink, (ActiveFsChunkStorage<Long>) aggregationChunkStorage)
+		ChunksCleanerService cleanerService = ChunksCleanerService.ofActiveFsChunkStorage(aggregationChunkStorage);
+		CubeCleanerController cleanerController = CubeCleanerController.create(dataSource, cleanerService)
 				.withChunksCleanupDelay(Duration.ofSeconds(10));
 
-		await(cleanerController.cleanup());
+		cleanerController.cleanup();
 	}
 
-	public void initializeRepo() throws IOException, SQLException {
-		uplink.initialize();
-		uplink.truncateTables();
+	public void initializeRepo() {
+		initializeUplink(uplink);
 
-		UplinkProtoCommit proto1 = await(uplink.createProtoCommit(0L, emptyList(), 0));
-		await(uplink.push(proto1)); // 1N
+		UplinkProtoCommit proto1 = await(() -> uplink.createProtoCommit(0L, emptyList(), 0));
+		await(() -> uplink.push(proto1)); // 1N
 
-		UplinkProtoCommit proto2 = await(uplink.createProtoCommit(1L, emptyList(), 1));
-		await(uplink.push(proto2)); // 2N
+		UplinkProtoCommit proto2 = await(() -> uplink.createProtoCommit(1L, emptyList(), 1));
+		await(() -> uplink.push(proto2)); // 2N
 
-		UplinkProtoCommit proto3 = await(uplink.createProtoCommit(2L, emptyList(), 2));
-		await(uplink.push(proto3)); // 3N
+		UplinkProtoCommit proto3 = await(() -> uplink.createProtoCommit(2L, emptyList(), 2));
+		await(() -> uplink.push(proto3)); // 3N
 
-		UplinkProtoCommit proto4 = await(uplink.createProtoCommit(3L, emptyList(), 3));
-		await(uplink.push(proto4)); // 4S
+		UplinkProtoCommit proto4 = await(() -> uplink.createProtoCommit(3L, emptyList(), 3));
+		await(() -> uplink.push(proto4)); // 4S
 
-		UplinkProtoCommit proto5 = await(uplink.createProtoCommit(4L, emptyList(), 4));
-		await(uplink.push(proto5)); // 5N
+		UplinkProtoCommit proto5 = await(() -> uplink.createProtoCommit(4L, emptyList(), 4));
+		await(() -> uplink.push(proto5)); // 5N
+	}
+
+	private <T> T await(AsyncSupplier<T> supplier) {
+		return TestUtils.asyncAwait(eventloop, supplier);
 	}
 }

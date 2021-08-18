@@ -3,7 +3,7 @@ SET autocommit = 0;
 START TRANSACTION;
 
 INSERT INTO {backup} (`revision`, `created_at`, `created_by`, `backup_by`)
-SELECT {backup_revision}, `created_at`, `created_by`, null FROM {revision} WHERE `revision`={backup_revision};
+SELECT {backup_revision}, `created_at`, `created_by`, {backup_by} FROM {revision} WHERE `revision`={backup_revision};
 
 INSERT INTO {backup_chunk}
 SELECT {backup_revision},

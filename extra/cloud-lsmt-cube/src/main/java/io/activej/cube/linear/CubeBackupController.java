@@ -19,7 +19,6 @@ package io.activej.cube.linear;
 import io.activej.aggregation.ActiveFsChunkStorage;
 import io.activej.common.ApplicationSettings;
 import io.activej.cube.exception.CubeException;
-import io.activej.eventloop.Eventloop;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,10 +27,9 @@ import java.io.IOException;
 import java.sql.*;
 import java.util.HashSet;
 import java.util.Set;
-import java.util.concurrent.ExecutionException;
 
-import static io.activej.cube.Utils.executeSqlScript;
-import static io.activej.cube.Utils.loadResource;
+import static io.activej.cube.linear.Utils.executeSqlScript;
+import static io.activej.cube.linear.Utils.loadResource;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 public final class CubeBackupController {
@@ -47,9 +45,8 @@ public final class CubeBackupController {
 
 	private static final String SQL_BACKUP_SCRIPT = "sql/backup.sql";
 
-	private final Eventloop eventloop;
 	private final DataSource dataSource;
-	private final ActiveFsChunkStorage<Long> storage;
+	private final ChunksBackupService chunksBackupService;
 
 	private String tableRevision = REVISION_TABLE;
 	private String tablePosition = POSITION_TABLE;
@@ -59,18 +56,15 @@ public final class CubeBackupController {
 	private String tablePositionBackup = BACKUP_POSITION_TABLE;
 	private String tableChunkBackup = BACKUP_CHUNK_TABLE;
 
-	private CubeBackupController(Eventloop eventloop,
-			DataSource dataSource,
-			ActiveFsChunkStorage<Long> storage) {
-		this.eventloop = eventloop;
+	private String backupBy = null;
+
+	private CubeBackupController(DataSource dataSource, ChunksBackupService chunksBackupService) {
 		this.dataSource = dataSource;
-		this.storage = storage;
+		this.chunksBackupService = chunksBackupService;
 	}
 
-	public static CubeBackupController create(Eventloop eventloop,
-			DataSource dataSource,
-			ActiveFsChunkStorage<Long> storage) {
-		return new CubeBackupController(eventloop, dataSource, storage);
+	public static CubeBackupController create(DataSource dataSource, ChunksBackupService chunksBackupService) {
+		return new CubeBackupController(dataSource, chunksBackupService);
 	}
 
 	public CubeBackupController withCustomTableNames(String tableRevision, String tablePosition, String tableChunk) {
@@ -89,6 +83,11 @@ public final class CubeBackupController {
 		this.tableBackup = tableBackup;
 		this.tablePositionBackup = tablePositionBackup;
 		this.tableChunkBackup = tableChunkBackup;
+		return this;
+	}
+
+	public CubeBackupController withBackupBy(String backupBy) {
+		this.backupBy = backupBy;
 		return this;
 	}
 
@@ -127,11 +126,9 @@ public final class CubeBackupController {
 		logger.trace("Backing up chunks {} on revision {}", chunkIds, revisionId);
 
 		try {
-			eventloop.submit(() -> storage.backup(String.valueOf(revisionId), chunkIds)).get();
-		} catch (InterruptedException e) {
-			throw new CubeException("Eventloop thread was interrupted", e);
-		} catch (ExecutionException e) {
-			throw new CubeException("Failed to backup chunks on storage ", e.getCause());
+			chunksBackupService.backup(revisionId, chunkIds);
+		} catch (IOException e) {
+			throw new CubeException("Failed to backup chunks", e);
 		}
 
 		logger.trace("Chunks {} are backed up on revision {}", chunkIds, revisionId);
@@ -191,7 +188,8 @@ public final class CubeBackupController {
 				.replace("{chunk}", tableChunk)
 				.replace("{backup}", tableBackup)
 				.replace("{backup_position}", tablePositionBackup)
-				.replace("{backup_chunk}", tableChunkBackup);
+				.replace("{backup_chunk}", tableChunkBackup)
+				.replace("{backup_by}", backupBy == null ? "null" : ('\'' + backupBy + '\''));
 	}
 
 	public void initialize() throws IOException, SQLException {
@@ -214,6 +212,14 @@ public final class CubeBackupController {
 				statement.execute(sql("TRUNCATE TABLE {backup_chunk}"));
 				statement.execute(sql("TRUNCATE TABLE {backup_position}"));
 			}
+		}
+	}
+
+	public interface ChunksBackupService {
+		void backup(long revisionId, Set<Long> chunkIds) throws IOException;
+
+		static ChunksBackupService ofActiveFsChunkStorage(ActiveFsChunkStorage<Long> storage) {
+			return Utils.backupServiceOfStorage(storage);
 		}
 	}
 }

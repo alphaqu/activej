@@ -25,13 +25,6 @@ import io.activej.cube.ot.CubeDiff;
 import io.activej.cube.ot.CubeDiffScheme;
 import io.activej.promise.Promise;
 
-import javax.sql.DataSource;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.sql.Connection;
-import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.*;
 
 import static io.activej.codegen.expression.Expressions.*;
@@ -120,26 +113,4 @@ public final class Utils {
 				.map(id -> (C) id)
 				.collect(toSet());
 	}
-
-	public static byte[] loadResource(String name) throws IOException {
-		try (InputStream stream = Thread.currentThread().getContextClassLoader().getResourceAsStream(name)) {
-			assert stream != null;
-			ByteArrayOutputStream baos = new ByteArrayOutputStream();
-			byte[] buffer = new byte[4096];
-			int size;
-			while ((size = stream.read(buffer)) != -1) {
-				baos.write(buffer, 0, size);
-			}
-			return baos.toByteArray();
-		}
-	}
-
-	public static void executeSqlScript(DataSource dataSource, String sql) throws SQLException {
-		try (Connection connection = dataSource.getConnection()) {
-			try (Statement statement = connection.createStatement()) {
-				statement.execute(sql);
-			}
-		}
-	}
-
 }

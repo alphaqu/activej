@@ -17,119 +17,155 @@
 package io.activej.cube.linear;
 
 import io.activej.aggregation.ActiveFsChunkStorage;
-import io.activej.async.function.AsyncSupplier;
-import io.activej.common.Utils;
-import io.activej.eventloop.Eventloop;
-import io.activej.eventloop.jmx.EventloopJmxBeanEx;
-import io.activej.jmx.api.attribute.JmxAttribute;
-import io.activej.jmx.api.attribute.JmxOperation;
-import io.activej.promise.Promise;
-import io.activej.promise.jmx.PromiseStats;
-import org.jetbrains.annotations.NotNull;
+import io.activej.common.ApplicationSettings;
+import io.activej.common.time.CurrentTimeProvider;
+import io.activej.cube.exception.CubeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.sql.DataSource;
+import java.io.IOException;
+import java.sql.*;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashSet;
+import java.util.Set;
 
-import static io.activej.async.function.AsyncSuppliers.reuse;
-import static io.activej.async.util.LogUtils.Level.TRACE;
-import static io.activej.async.util.LogUtils.thisMethod;
-import static io.activej.async.util.LogUtils.toLogger;
+import static io.activej.cube.linear.Utils.loadResource;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
-public final class CubeCleanerController<K, D, C> implements EventloopJmxBeanEx {
+public final class CubeCleanerController {
 	private static final Logger logger = LoggerFactory.getLogger(CubeCleanerController.class);
 
-	public static final Duration DEFAULT_CHUNKS_CLEANUP_DELAY = Duration.ofMinutes(1);
-	public static final Duration DEFAULT_SMOOTHING_WINDOW = Duration.ofMinutes(5);
+	public static final Duration CHUNKS_CLEANUP_DELAY = ApplicationSettings.getDuration(CubeCleanerController.class, "cleanupDelay", Duration.ofMinutes(1));
+	public static final Duration CLEANUP_OLDER_THEN = ApplicationSettings.getDuration(CubeCleanerController.class, "cleanupOlderThan", Duration.ofMinutes(10));
+	public static final int MINIMAL_REVISIONS = ApplicationSettings.getInt(CubeCleanerController.class, "minimalRevisions", 0);
 
-	private final Eventloop eventloop;
+	public static final String REVISION_TABLE = ApplicationSettings.getString(CubeCleanerController.class, "revisionTable", "revision");
+	public static final String POSITION_TABLE = ApplicationSettings.getString(CubeCleanerController.class, "positionTable", "position");
+	public static final String CHUNK_TABLE = ApplicationSettings.getString(CubeCleanerController.class, "chunkTable", "chunk");
 
-	private final CubeUplink<K, D, ?> uplink;
-	private final ActiveFsChunkStorage<C> chunksStorage;
+	private static final String SQL_CLEANUP_SCRIPT = "sql/cleanup.sql";
 
-	private Duration chunksCleanupDelay = DEFAULT_CHUNKS_CLEANUP_DELAY;
+	private final DataSource dataSource;
+	private final ChunksCleanerService chunksCleanerService;
 
-	private final PromiseStats promiseCleanup = PromiseStats.create(DEFAULT_SMOOTHING_WINDOW);
-	private final PromiseStats promiseCleanupCollectRequiredChunks = PromiseStats.create(DEFAULT_SMOOTHING_WINDOW);
-	private final PromiseStats promiseCleanupRepository = PromiseStats.create(DEFAULT_SMOOTHING_WINDOW);
-	private final PromiseStats promiseCleanupChunks = PromiseStats.create(DEFAULT_SMOOTHING_WINDOW);
+	private Duration chunksCleanupDelay = CHUNKS_CLEANUP_DELAY;
+	private Duration cleanupOlderThan = CLEANUP_OLDER_THEN;
+	private int minimalNumberOfRevisions = MINIMAL_REVISIONS;
 
-	CubeCleanerController(Eventloop eventloop,
-			CubeUplink<K, D, ?> uplink,
-			ActiveFsChunkStorage<C> chunksStorage) {
-		this.eventloop = eventloop;
-		this.uplink = uplink;
-		this.chunksStorage = chunksStorage;
+	private String tableRevision = REVISION_TABLE;
+	private String tablePosition = POSITION_TABLE;
+	private String tableChunk = CHUNK_TABLE;
+
+	private CurrentTimeProvider now = CurrentTimeProvider.ofSystem();
+
+	private CubeCleanerController(DataSource dataSource, ChunksCleanerService chunksCleanerService) {
+		this.dataSource = dataSource;
+		this.chunksCleanerService = chunksCleanerService;
 	}
 
-	public static <K, D, C> CubeCleanerController<K, D, C> create(Eventloop eventloop,
-			CubeUplink<K, D, ?> uplink,
-			ActiveFsChunkStorage<C> storage) {
-		return new CubeCleanerController<>(eventloop, uplink, storage);
+	public static CubeCleanerController create(DataSource dataSource, ChunksCleanerService chunksCleanerService) {
+		return new CubeCleanerController(dataSource, chunksCleanerService);
 	}
 
-	public CubeCleanerController<K, D, C> withChunksCleanupDelay(Duration chunksCleanupDelay) {
+	public CubeCleanerController withChunksCleanupDelay(Duration chunksCleanupDelay) {
 		this.chunksCleanupDelay = chunksCleanupDelay;
 		return this;
 	}
 
-	private final AsyncSupplier<Void> cleanup = reuse(this::doCleanup);
-
-	public Promise<Void> cleanup() {
-		return cleanup.get();
+	public CubeCleanerController withCurrentTimeProvider(CurrentTimeProvider now) {
+		this.now = now;
+		return this;
 	}
 
-	private Promise<Void> doCleanup() {
-		Instant safePoint = eventloop.currentInstant().minus(chunksCleanupDelay);
-
-		return uplink.<C>getRequiredChunks()
-				.then(requiredChunks -> chunksStorage.checkRequiredChunks(requiredChunks)
-						.then(() -> chunksStorage.cleanup(requiredChunks, safePoint)
-								.whenComplete(promiseCleanupChunks.recordStats()))
-						.whenComplete(logger.isTraceEnabled() ?
-								toLogger(logger, TRACE, thisMethod(), safePoint, requiredChunks) :
-								toLogger(logger, thisMethod(), safePoint, Utils.toString(requiredChunks))));
+	public CubeCleanerController withCustomTableNames(String tableRevision, String tablePosition, String tableChunk) {
+		this.tableRevision = tableRevision;
+		this.tablePosition = tablePosition;
+		this.tableChunk = tableChunk;
+		return this;
 	}
 
-	@JmxAttribute
-	public Duration getChunksCleanupDelay() {
-		return chunksCleanupDelay;
+	/**
+	 * Number of revisions that should not be cleaned up if possible
+	 */
+	public CubeCleanerController withMinimalNumberOfRevisions(int minimalRevisions) {
+		this.minimalNumberOfRevisions = minimalRevisions;
+		return this;
 	}
 
-	@JmxAttribute
-	public void setChunksCleanupDelay(Duration chunksCleanupDelay) {
-		this.chunksCleanupDelay = chunksCleanupDelay;
+	public CubeCleanerController withCleanupOlderThen(Duration cleanupOlderThan) {
+		this.cleanupOlderThan = cleanupOlderThan;
+		return this;
 	}
 
-	@JmxAttribute
-	public PromiseStats getPromiseCleanup() {
-		return promiseCleanup;
+	public void cleanup() throws CubeException {
+		Set<Long> requiredChunks;
+		try (Connection connection = dataSource.getConnection()) {
+			cleanupConsolidatedChunks(connection);
+			requiredChunks = getRequiredChunks(connection);
+		} catch (SQLException e) {
+			throw new CubeException("Failed to connect to the database", e);
+		}
+
+		logger.trace("Required chunks: " + requiredChunks);
+
+		try {
+			chunksCleanerService.checkRequiredChunks(requiredChunks);
+			chunksCleanerService.cleanup(requiredChunks, now.currentInstant().minus(chunksCleanupDelay));
+		} catch (IOException e) {
+			throw new CubeException("Failed to cleanup", e);
+		}
+
+		logger.trace("Chunks successfully cleaned up");
 	}
 
-	@JmxAttribute
-	public PromiseStats getPromiseCleanupCollectRequiredChunks() {
-		return promiseCleanupCollectRequiredChunks;
+	private void cleanupConsolidatedChunks(Connection connection) throws CubeException {
+		logger.trace("Cleaning up consolidated chunks");
+
+		try (Statement statement = connection.createStatement()) {
+			String cleanupScript = sql(new String(loadResource(SQL_CLEANUP_SCRIPT), UTF_8));
+			statement.execute(cleanupScript);
+		} catch (SQLException | IOException e) {
+			throw new CubeException("Failed to clean up consolidated chunks", e);
+		}
+
+		logger.trace("Consolidated chunks have been cleaned up from the database");
 	}
 
-	@JmxAttribute
-	public PromiseStats getPromiseCleanupRepository() {
-		return promiseCleanupRepository;
+	private Set<Long> getRequiredChunks(Connection connection) throws CubeException {
+		try (PreparedStatement ps = connection.prepareStatement((sql("" +
+				"SELECT `id` FROM {chunk}"
+		)))) {
+			ResultSet resultSet = ps.executeQuery();
+
+			Set<Long> requiredChunks = new HashSet<>();
+			while (resultSet.next()) {
+				requiredChunks.add(resultSet.getLong(1));
+			}
+			return requiredChunks;
+		} catch (SQLException e) {
+			throw new CubeException("Failed to retrieve required chunks", e);
+		}
 	}
 
-	@JmxAttribute
-	public PromiseStats getPromiseCleanupChunks() {
-		return promiseCleanupChunks;
+	private String sql(String sql) {
+		return sql
+				.replace("{revision}", tableRevision)
+				.replace("{position}", tablePosition)
+				.replace("{chunk}", tableChunk)
+				.replace("{min_revisions}", String.valueOf(minimalNumberOfRevisions))
+				.replace("{cleanup_from}", cleanupOlderThan.getSeconds() + " SECOND");
 	}
 
-	@JmxOperation
-	public void cleanupNow() {
-		cleanup();
+	public interface ChunksCleanerService {
+		void checkRequiredChunks(Set<Long> chunkIds) throws IOException;
+
+		void cleanup(Set<Long> chunkIds, Instant safePoint) throws IOException;
+
+		static ChunksCleanerService ofActiveFsChunkStorage(ActiveFsChunkStorage<Long> storage) {
+			return Utils.cleanerServiceOfStorage(storage);
+		}
 	}
 
-	@NotNull
-	@Override
-	public Eventloop getEventloop() {
-		return eventloop;
-	}
 }

@@ -10,7 +10,9 @@ import io.activej.codegen.DefiningClassLoader;
 import io.activej.csp.process.frames.LZ4FrameFormat;
 import io.activej.cube.Cube;
 import io.activej.cube.IdGeneratorStub;
+import io.activej.cube.TestUtils;
 import io.activej.cube.exception.CubeException;
+import io.activej.cube.linear.CubeBackupController.ChunksBackupService;
 import io.activej.cube.linear.CubeUplinkMySql.UplinkProtoCommit;
 import io.activej.cube.ot.CubeDiff;
 import io.activej.etl.LogDiff;
@@ -35,7 +37,6 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.*;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
@@ -100,7 +101,8 @@ public class CubeBackupControllerTest {
 				.withAggregation(id("pub").withDimensions("pub").withMeasures("pubRequests"))
 				.withAggregation(id("adv").withDimensions("adv").withMeasures("advRequests", "pubRequests"));
 
-		backupController = CubeBackupController.create(eventloop, dataSource, aggregationChunkStorage);
+		ChunksBackupService chunksBackupService = ChunksBackupService.ofActiveFsChunkStorage(aggregationChunkStorage);
+		backupController = CubeBackupController.create(dataSource, chunksBackupService);
 		uplink = CubeUplinkMySql.create(executor, dataSource, PrimaryKeyCodecs.ofCube(cube));
 		backupController.initialize();
 		backupController.truncateTables();
@@ -185,11 +187,7 @@ public class CubeBackupControllerTest {
 	}
 
 	private <T> T await(AsyncSupplier<T> supplier) {
-		try {
-			return eventloop.submit(supplier::get).get();
-		} catch (InterruptedException | ExecutionException e) {
-			throw new AssertionError(e);
-		}
+		return TestUtils.asyncAwait(eventloop, supplier);
 	}
 
 	private void uploadStubChunks(List<LogDiff<CubeDiff>> diffs) {

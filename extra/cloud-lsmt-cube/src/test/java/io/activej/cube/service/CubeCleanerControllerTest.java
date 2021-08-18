@@ -21,7 +21,10 @@ import io.activej.ot.repository.OTRepositoryMySql;
 import io.activej.ot.system.OTSystem;
 import io.activej.test.rules.ByteBufRule;
 import io.activej.test.rules.EventloopRule;
-import org.junit.*;
+import org.junit.Before;
+import org.junit.ClassRule;
+import org.junit.Rule;
+import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import javax.sql.DataSource;
@@ -40,7 +43,6 @@ import static io.activej.promise.TestUtils.await;
 import static io.activej.test.TestUtils.dataSource;
 import static java.util.Collections.emptyList;
 
-@Ignore
 public class CubeCleanerControllerTest {
 	private static final OTSystem<LogDiff<CubeDiff>> OT_SYSTEM = LogOT.createLogOT(CubeOT.createCubeOT());
 

@@ -34,6 +34,7 @@ import io.activej.etl.LogPositionDiff;
 import io.activej.multilog.LogFile;
 import io.activej.multilog.LogPosition;
 import io.activej.ot.exception.OTException;
+import io.activej.ot.uplink.OTUplink;
 import io.activej.promise.Promise;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
@@ -44,17 +45,15 @@ import java.io.IOException;
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.Executor;
-import java.util.stream.Collectors;
 
 import static io.activej.common.Checks.checkArgument;
 import static io.activej.common.Utils.transformMap;
-import static io.activej.cube.Utils.executeSqlScript;
-import static io.activej.cube.Utils.loadResource;
+import static io.activej.cube.linear.Utils.*;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Collections.*;
 import static java.util.stream.Collectors.joining;
 
-public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>, CubeUplinkMySql.UplinkProtoCommit> {
+public final class CubeUplinkMySql implements OTUplink<Long, LogDiff<CubeDiff>, CubeUplinkMySql.UplinkProtoCommit> {
 	private static final Logger logger = LoggerFactory.getLogger(CubeUplinkMySql.class);
 
 	public static final String REVISION_TABLE = ApplicationSettings.getString(CubeUplinkMySql.class, "revisionTable", "revision");
@@ -270,27 +269,6 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 				});
 	}
 
-	@Override
-	@SuppressWarnings("unchecked")
-	public Promise<Set<Long>> getRequiredChunks() {
-		return Promise.ofBlockingCallable(executor,
-				() -> {
-					try (Connection connection = dataSource.getConnection()) {
-						try (PreparedStatement ps = connection.prepareStatement(sql("" +
-								"SELECT `id` FROM {chunk}"
-						))) {
-							ResultSet resultSet = ps.executeQuery();
-
-							Set<Long> requiredChunks = new HashSet<>();
-							while (resultSet.next()) {
-								requiredChunks.add(resultSet.getLong(1));
-							}
-							return requiredChunks;
-						}
-					}
-				});
-	}
-
 	private CubeDiff fetchChunkDiffs(Connection connection, long from, @Nullable Long to) throws SQLException, MalformedDataException {
 		CubeDiff cubeDiff;
 		try (PreparedStatement ps = connection.prepareStatement(sql("" +
@@ -406,8 +384,8 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 		))) {
 			int index = 1;
 			for (ChunkWithAggregationId chunk : chunks) {
-				String aggregationId = chunk.aggregationId;
-				AggregationChunk aggregationChunk = chunk.chunk;
+				String aggregationId = chunk.getAggregationId();
+				AggregationChunk aggregationChunk = chunk.getChunk();
 
 				ps.setLong(index++, (long) aggregationChunk.getChunkId());
 				ps.setString(index++, aggregationId);
@@ -442,7 +420,7 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 			int index = 1;
 			ps.setLong(index++, newRevision);
 			for (ChunkWithAggregationId chunk : chunks) {
-				ps.setLong(index++, (Long) chunk.chunk.getChunkId());
+				ps.setLong(index++, (Long) chunk.getChunk().getChunkId());
 			}
 
 			ps.executeUpdate();
@@ -507,14 +485,6 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 				statement.execute(sql("DELETE FROM {revision} WHERE `revision`!=0"));
 			}
 		}
-	}
-
-	private static List<String> measuresFromString(String measuresString) {
-		return Arrays.stream(measuresString.split(" ")).collect(Collectors.toList());
-	}
-
-	private static String measuresToString(List<String> measures) {
-		return String.join(" ", measures);
 	}
 
 	private long getMaxRevision(Connection connection) throws SQLException, OTException {
@@ -600,29 +570,6 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 			throw new MalformedDataException(e);
 		} catch (IOException e) {
 			throw new AssertionError(e);
-		}
-	}
-
-	private static class ChunkWithAggregationId {
-		private final AggregationChunk chunk;
-		private final String aggregationId;
-
-		private ChunkWithAggregationId(AggregationChunk chunk, String aggregationId) {
-			this.chunk = chunk;
-			this.aggregationId = aggregationId;
-		}
-
-		@Override
-		public boolean equals(Object o) {
-			if (this == o) return true;
-			if (o == null || getClass() != o.getClass()) return false;
-			ChunkWithAggregationId that = (ChunkWithAggregationId) o;
-			return chunk.equals(that.chunk);
-		}
-
-		@Override
-		public int hashCode() {
-			return Objects.hash(chunk);
 		}
 	}
 }
