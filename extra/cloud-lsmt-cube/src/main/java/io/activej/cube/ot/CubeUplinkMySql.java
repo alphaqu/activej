@@ -16,9 +16,15 @@
 
 package io.activej.cube.ot;
 
+import com.dslplatform.json.DslJson;
+import com.dslplatform.json.JsonReader;
+import com.dslplatform.json.JsonWriter;
+import com.dslplatform.json.ParsingException;
+import com.dslplatform.json.runtime.Settings;
 import io.activej.aggregation.AggregationChunk;
 import io.activej.aggregation.PrimaryKey;
 import io.activej.aggregation.ot.AggregationDiff;
+import io.activej.aggregation.util.JsonCodec;
 import io.activej.common.ApplicationSettings;
 import io.activej.common.exception.MalformedDataException;
 import io.activej.common.tuple.Tuple2;
@@ -110,8 +116,12 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 								String aggregationId = resultSet.getString(2);
 								List<String> measures = measuresFromString(resultSet.getString(3));
 								measuresValidator.validate(aggregationId, measures);
-								PrimaryKey minKey = primaryKeyCodecs.fromString(aggregationId, resultSet.getString(4));
-								PrimaryKey maxKey = primaryKeyCodecs.fromString(aggregationId, resultSet.getString(5));
+								JsonCodec<PrimaryKey> codec = primaryKeyCodecs.getCodec(aggregationId);
+								if (codec == null) {
+									throw new MalformedDataException("Unknown aggregation: " + aggregationId);
+								}
+								PrimaryKey minKey = fromJson(codec, resultSet.getString(4));
+								PrimaryKey maxKey = fromJson(codec, resultSet.getString(5));
 								int count = resultSet.getInt(6);
 
 								aggregationDiffs.computeIfAbsent(aggregationId, $ -> new HashSet<>())
@@ -298,8 +308,12 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 				String aggregationId = resultSet.getString(2);
 				List<String> measures = measuresFromString(resultSet.getString(3));
 				measuresValidator.validate(aggregationId, measures);
-				PrimaryKey minKey = primaryKeyCodecs.fromString(aggregationId, resultSet.getString(4));
-				PrimaryKey maxKey = primaryKeyCodecs.fromString(aggregationId, resultSet.getString(5));
+				JsonCodec<PrimaryKey> codec = primaryKeyCodecs.getCodec(aggregationId);
+				if (codec == null) {
+					throw new MalformedDataException("Unknown aggregation: " + aggregationId);
+				}
+				PrimaryKey minKey = fromJson(codec, resultSet.getString(4));
+				PrimaryKey maxKey = fromJson(codec, resultSet.getString(5));
 				int count = resultSet.getInt(6);
 				boolean isAdded = resultSet.getBoolean(7);
 
@@ -388,8 +402,12 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 				List<String> measures = aggregationChunk.getMeasures();
 				measuresValidator.validate(aggregationId, measures);
 				ps.setString(index++, measuresToString(measures));
-				ps.setString(index++, primaryKeyCodecs.toString(aggregationId, aggregationChunk.getMinPrimaryKey()));
-				ps.setString(index++, primaryKeyCodecs.toString(aggregationId, aggregationChunk.getMaxPrimaryKey()));
+				JsonCodec<PrimaryKey> codec = primaryKeyCodecs.getCodec(aggregationId);
+				if (codec == null) {
+					throw new IllegalArgumentException("Unknown aggregation: " + aggregationId);
+				}
+				ps.setString(index++, toJson(codec, aggregationChunk.getMinPrimaryKey()));
+				ps.setString(index++, toJson(codec, aggregationChunk.getMaxPrimaryKey()));
 				ps.setInt(index++, aggregationChunk.getCount());
 				ps.setLong(index++, newRevision);
 			}
@@ -540,6 +558,36 @@ public final class CubeUplinkMySql implements CubeUplink<Long, LogDiff<CubeDiff>
 
 		public List<LogDiff<CubeDiff>> getDiffs() {
 			return diffs;
+		}
+	}
+
+	private static final DslJson<?> DSL_JSON = new DslJson<>(Settings.withRuntime().includeServiceLoader());
+	private static final ThreadLocal<JsonWriter> WRITERS = ThreadLocal.withInitial(DSL_JSON::newWriter);
+	private static final ThreadLocal<JsonReader<?>> READERS = ThreadLocal.withInitial(DSL_JSON::newReader);
+
+	private String toJson(JsonCodec<PrimaryKey> codec, PrimaryKey key) {
+		JsonWriter jsonWriter = WRITERS.get();
+		jsonWriter.reset();
+		codec.write(jsonWriter, key);
+		return jsonWriter.toString();
+	}
+
+	private PrimaryKey fromJson(JsonCodec<PrimaryKey> codec, String json) throws MalformedDataException {
+		byte[] bytes = json.getBytes(UTF_8);
+		PrimaryKey deserialized;
+		try {
+			JsonReader<?> jsonReader = READERS.get().process(bytes, bytes.length);
+			jsonReader.getNextToken();
+			deserialized = codec.read(jsonReader);
+			if (jsonReader.length() != jsonReader.getCurrentIndex()) {
+				String unexpectedData = jsonReader.toString().substring(jsonReader.getCurrentIndex());
+				throw new MalformedDataException("Unexpected JSON data: " + unexpectedData);
+			}
+			return deserialized;
+		} catch (ParsingException e) {
+			throw new MalformedDataException(e);
+		} catch (IOException e) {
+			throw new AssertionError(e);
 		}
 	}
 

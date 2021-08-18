@@ -21,6 +21,7 @@ import com.dslplatform.json.JsonReader.ReadObject;
 import com.dslplatform.json.JsonWriter;
 import com.dslplatform.json.NumberConverter;
 import com.dslplatform.json.StringConverter;
+import io.activej.aggregation.util.JsonCodec;
 import io.activej.codegen.DefiningClassLoader;
 import io.activej.cube.QueryResult;
 import io.activej.record.Record;

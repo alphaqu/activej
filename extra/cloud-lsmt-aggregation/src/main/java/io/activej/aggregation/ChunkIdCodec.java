@@ -16,10 +16,16 @@
 
 package io.activej.aggregation;
 
-import io.activej.aggregation.util.StringCodec;
+import com.dslplatform.json.JsonReader;
+import com.dslplatform.json.JsonWriter;
+import com.dslplatform.json.NumberConverter;
+import io.activej.aggregation.util.JsonCodec;
 import io.activej.common.exception.MalformedDataException;
+import org.jetbrains.annotations.NotNull;
 
-public interface ChunkIdCodec<C> extends StringCodec<C> {
+import java.io.IOException;
+
+public interface ChunkIdCodec<C> extends JsonCodec<C> {
 	String toFileName(C chunkId);
 
 	C fromFileName(String chunkFileName) throws MalformedDataException;
@@ -41,17 +47,13 @@ public interface ChunkIdCodec<C> extends StringCodec<C> {
 			}
 
 			@Override
-			public String toString(Long value) {
-				return value.toString();
+			public Long read(@NotNull JsonReader reader) throws IOException {
+				return NumberConverter.deserializeLong(reader);
 			}
 
 			@Override
-			public Long fromString(String string) throws MalformedDataException {
-				try {
-					return Long.parseLong(string);
-				} catch (NumberFormatException e) {
-					throw new MalformedDataException(e);
-				}
+			public void write(@NotNull JsonWriter writer, Long value) {
+				NumberConverter.serialize(value, writer);
 			}
 		};
 	}
@@ -69,13 +71,13 @@ public interface ChunkIdCodec<C> extends StringCodec<C> {
 			}
 
 			@Override
-			public String toString(String value) {
-				return value;
+			public String read(@NotNull JsonReader reader) throws IOException {
+				return reader.readString();
 			}
 
 			@Override
-			public String fromString(String string) {
-				return string;
+			public void write(@NotNull JsonWriter writer, String value) {
+				writer.writeString(value);
 			}
 		};
 	}

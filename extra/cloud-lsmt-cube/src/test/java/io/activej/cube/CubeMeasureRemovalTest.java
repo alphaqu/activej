@@ -355,6 +355,6 @@ public class CubeMeasureRemovalTest {
 
 		Throwable exception = awaitException(uplink2.checkout());
 		assertThat(exception, instanceOf(MalformedDataException.class));
-		assertEquals("Unknown aggregation 'otherAggregation'", exception.getMessage());
+		assertEquals("Unknown aggregation: otherAggregation", exception.getMessage());
 	}
 }

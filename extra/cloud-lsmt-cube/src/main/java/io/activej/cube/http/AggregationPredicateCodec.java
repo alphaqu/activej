@@ -22,6 +22,7 @@ import com.dslplatform.json.JsonWriter;
 import com.dslplatform.json.ParsingException;
 import io.activej.aggregation.AggregationPredicate;
 import io.activej.aggregation.AggregationPredicates;
+import io.activej.aggregation.util.JsonCodec;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;

@@ -17,7 +17,7 @@
 package io.activej.aggregation.fieldtype;
 
 import io.activej.aggregation.measure.HyperLogLog;
-import io.activej.aggregation.util.StringCodec;
+import io.activej.aggregation.util.JsonCodec;
 import io.activej.codegen.expression.Expression;
 import io.activej.codegen.expression.Expressions;
 import io.activej.codegen.util.Primitives;
@@ -30,7 +30,7 @@ import java.lang.reflect.Type;
 import java.time.LocalDate;
 import java.util.Set;
 
-import static io.activej.aggregation.fieldtype.StringCodecs.*;
+import static io.activej.aggregation.fieldtype.JsonCodecs.*;
 import static io.activej.codegen.expression.Expressions.*;
 import static io.activej.serializer.StringFormat.UTF8;
 import static java.time.temporal.ChronoUnit.DAYS;
@@ -97,7 +97,6 @@ public final class FieldTypes {
 		return serializer;
 	}
 
-
 	public static <T> FieldType<Set<T>> ofSet(FieldType<T> fieldType) {
 		SerializerDef itemSerializer = fieldType.getSerializer();
 		if (itemSerializer instanceof SerializerDefPrimitive) {
@@ -108,12 +107,12 @@ public final class FieldTypes {
 				Primitives.wrap((Class<?>) fieldType.getDataType()) :
 				fieldType.getDataType();
 		Type dataType = Types.parameterizedType(Set.class, wrappedNestedType);
-		StringCodec<Set<T>> codec = StringCodecs.ofSet(fieldType.getCodec());
+		JsonCodec<Set<T>> codec = JsonCodecs.ofSet(fieldType.getCodec());
 		return new FieldType<>(Set.class, dataType, serializer, codec, codec);
 	}
 
 	public static <E extends Enum<E>> FieldType<E> ofEnum(Class<E> enumClass) {
-		return new FieldType<>(enumClass, new SerializerDefEnum(enumClass), StringCodecs.ofEnum(enumClass));
+		return new FieldType<>(enumClass, new SerializerDefEnum(enumClass), JsonCodecs.ofEnum(enumClass));
 	}
 
 	public static FieldType<String> ofString() {

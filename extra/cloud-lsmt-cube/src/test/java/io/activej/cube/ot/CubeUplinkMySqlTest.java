@@ -1,9 +1,11 @@
 package io.activej.cube.ot;
 
+import com.dslplatform.json.ObjectConverter;
+import com.dslplatform.json.StringConverter;
 import io.activej.aggregation.AggregationChunk;
 import io.activej.aggregation.PrimaryKey;
 import io.activej.aggregation.ot.AggregationDiff;
-import io.activej.aggregation.util.StringCodec;
+import io.activej.aggregation.util.JsonCodec;
 import io.activej.common.Utils;
 import io.activej.cube.ot.CubeUplinkMySql.UplinkProtoCommit;
 import io.activej.etl.LogDiff;
@@ -33,7 +35,6 @@ import static io.activej.test.TestUtils.dataSource;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Collections.emptySet;
 import static java.util.Collections.singletonList;
-import static java.util.stream.Collectors.joining;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.junit.Assert.assertEquals;
@@ -53,17 +54,15 @@ public class CubeUplinkMySqlTest {
 
 	private CubeUplinkMySql uplink;
 
+	@SuppressWarnings("ConstantConditions")
 	@Before
 	public void setUp() throws Exception {
 		DataSource dataSource = dataSource("test.properties");
 
-		StringCodec<PrimaryKey> codec = StringCodec.of(
-				value -> PrimaryKey.ofArray((Object[]) value.split(" ")),
-				primaryKey -> primaryKey.values().stream()
-						.map(Object::toString)
-						.collect(joining(" "))
-		);
-		PrimaryKeyCodecs codecs = PrimaryKeyCodecs.ofLookUp($ -> codec);
+		//noinspection unchecked
+		PrimaryKeyCodecs codecs = PrimaryKeyCodecs.ofLookUp($ -> JsonCodec.of(
+				jsonReader -> PrimaryKey.ofList(ObjectConverter.deserializeList(jsonReader)),
+				(jsonWriter, o) -> StringConverter.serialize((List<String>) (List<?>) Arrays.asList(o.getArray()), jsonWriter)));
 		uplink = CubeUplinkMySql.create(Executors.newCachedThreadPool(), dataSource, codecs);
 
 		initializeUplink(uplink);
