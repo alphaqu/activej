@@ -11,10 +11,8 @@ import io.activej.ot.OTCommit;
 import io.activej.ot.OTState;
 import io.activej.ot.OTStateManager;
 import io.activej.ot.repository.OTRepositoryMySql;
-
-import java.io.IOException;
-import java.sql.SQLException;
-import java.util.concurrent.ExecutionException;
+import io.activej.test.TestUtils.ThrowingSupplier;
+import io.activej.test.rules.LambdaStatement.ThrowingRunnable;
 
 import static io.activej.promise.TestUtils.await;
 import static java.util.Collections.emptyList;
@@ -23,21 +21,17 @@ import static java.util.stream.Collectors.toSet;
 public final class TestUtils {
 
 	public static void initializeUplink(CubeUplinkMySql uplink) {
-		try {
+		noFail(() -> {
 			uplink.initialize();
 			uplink.truncateTables();
-		} catch (IOException | SQLException e) {
-			throw new AssertionError(e);
-		}
+		});
 	}
 
 	public static void initializeRepository(OTRepositoryMySql<LogDiff<CubeDiff>> repository) {
-		try {
+		noFail(() -> {
 			repository.initialize();
 			repository.truncateTables();
-		} catch (IOException | SQLException e) {
-			throw new AssertionError(e);
-		}
+		});
 		Long id = await(repository.createCommitId());
 		await(repository.pushAndUpdateHead(OTCommit.ofRoot(id)));
 		await(repository.saveSnapshot(id, emptyList()));
@@ -62,9 +56,21 @@ public final class TestUtils {
 	};
 
 	public static <T> T asyncAwait(Eventloop eventloop, AsyncSupplier<T> supplier) {
+		return noFail(() -> eventloop.submit(supplier::get).get());
+	}
+
+	public static <T> T noFail(ThrowingSupplier<T> supplier) {
 		try {
-			return eventloop.submit(supplier::get).get();
-		} catch (InterruptedException | ExecutionException e) {
+			return supplier.get();
+		} catch (Throwable e) {
+			throw new AssertionError(e);
+		}
+	}
+
+	public static void noFail(ThrowingRunnable runnable) {
+		try {
+			runnable.run();
+		} catch (Throwable e) {
 			throw new AssertionError(e);
 		}
 	}

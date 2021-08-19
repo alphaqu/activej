@@ -6,39 +6,25 @@ import io.activej.aggregation.ChunkIdCodec;
 import io.activej.codegen.DefiningClassLoader;
 import io.activej.csp.process.frames.FrameFormat;
 import io.activej.csp.process.frames.LZ4FrameFormat;
-import io.activej.cube.linear.CubeUplinkMySql;
-import io.activej.cube.linear.PrimaryKeyCodecs;
 import io.activej.cube.ot.CubeDiff;
-import io.activej.cube.ot.CubeOT;
 import io.activej.datastream.StreamConsumer;
 import io.activej.datastream.StreamSupplier;
 import io.activej.etl.LogDiff;
-import io.activej.etl.LogOT;
 import io.activej.etl.LogOTProcessor;
 import io.activej.etl.LogOTState;
-import io.activej.eventloop.Eventloop;
 import io.activej.fs.LocalActiveFs;
 import io.activej.multilog.Multilog;
 import io.activej.multilog.MultilogImpl;
 import io.activej.ot.OTStateManager;
-import io.activej.ot.system.OTSystem;
+import io.activej.ot.uplink.OTUplink;
 import io.activej.serializer.SerializerBuilder;
-import io.activej.test.rules.ByteBufRule;
-import io.activej.test.rules.ClassBuilderConstantsRule;
-import io.activej.test.rules.EventloopRule;
-import org.junit.ClassRule;
-import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
 
-import javax.sql.DataSource;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
-import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
 import java.util.stream.Stream;
 
 import static io.activej.aggregation.AggregationPredicates.alwaysTrue;
@@ -46,11 +32,9 @@ import static io.activej.aggregation.fieldtype.FieldTypes.*;
 import static io.activej.aggregation.measure.Measures.sum;
 import static io.activej.common.Checks.checkNotNull;
 import static io.activej.cube.Cube.AggregationConfig.id;
-import static io.activej.cube.TestUtils.initializeUplink;
 import static io.activej.cube.TestUtils.runProcessLogs;
 import static io.activej.multilog.LogNamingScheme.NAME_PARTITION_REMAINDER_SEQ;
 import static io.activej.promise.TestUtils.await;
-import static io.activej.test.TestUtils.dataSource;
 import static java.util.Arrays.asList;
 import static java.util.stream.Collectors.toMap;
 import static java.util.stream.Collectors.toSet;
@@ -59,35 +43,19 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 
 @SuppressWarnings("ArraysAsListWithZeroOrOneArgument")
-public class CubeIntegrationTest {
-	@ClassRule
-	public static final EventloopRule eventloopRule = new EventloopRule();
-
-	@ClassRule
-	public static final ByteBufRule byteBufRule = new ByteBufRule();
-
-	@Rule
-	public final TemporaryFolder temporaryFolder = new TemporaryFolder();
-
-	@Rule
-	public final ClassBuilderConstantsRule classBuilderConstantsRule = new ClassBuilderConstantsRule();
-
+public class CubeIntegrationTest extends CubeTestBase {
 	@SuppressWarnings({"unchecked", "rawtypes"})
 	@Test
 	public void test() throws Exception {
 		Path aggregationsDir = temporaryFolder.newFolder().toPath();
 		Path logsDir = temporaryFolder.newFolder().toPath();
 
-		Eventloop eventloop = Eventloop.getCurrentEventloop();
-		Executor executor = Executors.newCachedThreadPool();
-		DefiningClassLoader classLoader = DefiningClassLoader.create();
-
-		LocalActiveFs fs = LocalActiveFs.create(eventloop, executor, aggregationsDir)
+		LocalActiveFs fs = LocalActiveFs.create(EVENTLOOP, EXECUTOR, aggregationsDir)
 				.withTempDir(Files.createTempDirectory(""));
 		await(fs.start());
 		FrameFormat frameFormat = LZ4FrameFormat.create();
-		ActiveFsChunkStorage<Long> aggregationChunkStorage = ActiveFsChunkStorage.create(eventloop, ChunkIdCodec.ofLong(), new IdGeneratorStub(), frameFormat, fs);
-		Cube cube = Cube.create(eventloop, executor, classLoader, aggregationChunkStorage)
+		ActiveFsChunkStorage<Long> aggregationChunkStorage = ActiveFsChunkStorage.create(EVENTLOOP, ChunkIdCodec.ofLong(), new IdGeneratorStub(), frameFormat, fs);
+		Cube cube = Cube.create(EVENTLOOP, EXECUTOR, CLASS_LOADER, aggregationChunkStorage)
 				.withDimension("date", ofLocalDate())
 				.withDimension("advertiser", ofInt())
 				.withDimension("campaign", ofInt())
@@ -108,23 +76,20 @@ public class CubeIntegrationTest {
 						.withDimensions("advertiser")
 						.withMeasures("impressions", "clicks", "conversions", "revenue"));
 
-		DataSource dataSource = dataSource("test.properties");
-		CubeUplinkMySql uplink = CubeUplinkMySql.create(executor, dataSource, PrimaryKeyCodecs.ofCube(cube));
-		initializeUplink(uplink);
+		OTUplink<Long, LogDiff<CubeDiff>, ?> uplink = uplinkFactory.create(cube);
 
 		LogOTState<CubeDiff> cubeDiffLogOTState = LogOTState.create(cube);
-		OTSystem<LogDiff<CubeDiff>> otSystem = LogOT.createLogOT(CubeOT.createCubeOT());
-		OTStateManager<Long, LogDiff<CubeDiff>> logCubeStateManager = OTStateManager.create(eventloop, otSystem, uplink, cubeDiffLogOTState);
+		OTStateManager<Long, LogDiff<CubeDiff>> logCubeStateManager = OTStateManager.create(EVENTLOOP, LOG_OT, uplink, cubeDiffLogOTState);
 
-		LocalActiveFs localFs = LocalActiveFs.create(eventloop, executor, logsDir);
+		LocalActiveFs localFs = LocalActiveFs.create(EVENTLOOP, EXECUTOR, logsDir);
 		await(localFs.start());
-		Multilog<LogItem> multilog = MultilogImpl.create(eventloop,
+		Multilog<LogItem> multilog = MultilogImpl.create(EVENTLOOP,
 				localFs,
 				frameFormat,
-				SerializerBuilder.create(classLoader).build(LogItem.class),
+				SerializerBuilder.create(CLASS_LOADER).build(LogItem.class),
 				NAME_PARTITION_REMAINDER_SEQ);
 
-		LogOTProcessor<LogItem, CubeDiff> logOTProcessor = LogOTProcessor.create(eventloop,
+		LogOTProcessor<LogItem, CubeDiff> logOTProcessor = LogOTProcessor.create(EVENTLOOP,
 				multilog,
 				cube.logStreamConsumer(LogItem.class),
 				"testlog",
@@ -141,7 +106,7 @@ public class CubeIntegrationTest {
 		printDirContents(logsDir);
 
 		//		AsynchronousFileChannel channel = AsynchronousFileChannel.open(Files.list(logsDir).findFirst().get(),
-		//				EnumSet.of(StandardOpenOption.WRITE), executor);
+		//				EnumSet.of(StandardOpenOption.WRITE), EXECUTOR);
 		//		channel.truncate(13);
 		//		channel.write(ByteBuffer.wrap(new byte[]{123}), 0).get();
 		//		channel.close();
@@ -167,7 +132,7 @@ public class CubeIntegrationTest {
 		await(aggregationChunkStorage.backup("backup1", (Set) cube.getAllChunks()));
 
 		List<LogItem> logItems = await(cube.queryRawStream(asList("date"), asList("clicks"), alwaysTrue(),
-						LogItem.class, DefiningClassLoader.create(classLoader))
+						LogItem.class, DefiningClassLoader.create(CLASS_LOADER))
 				.toList());
 
 		// Aggregate manually
@@ -191,7 +156,7 @@ public class CubeIntegrationTest {
 
 		// Query
 		List<LogItem> queryResult = await(cube.queryRawStream(asList("date"), asList("clicks"), alwaysTrue(),
-				LogItem.class, DefiningClassLoader.create(classLoader)).toList());
+				LogItem.class, DefiningClassLoader.create(CLASS_LOADER)).toList());
 
 		assertEquals(map, queryResult.stream().collect(toMap(r -> r.date, r -> r.clicks)));
 
